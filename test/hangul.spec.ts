@@ -116,4 +116,27 @@ describe("hangul search token generator", () => {
 		const followUpTokens = split.followUpMessages.join(" ").trim().split(/\s+/);
 		expect([...captionTokens, ...followUpTokens]).toEqual(longResult.tokens);
 	});
+
+	it("preserves caption whitespace for entity offsets", () => {
+		const original = " \n 😀원본 설명  \n ";
+		const split = splitCaptionAndFollowUps("한국 ㅎㄱ", original);
+		expect(split.caption).toBe(`${original}\n\n한국 ㅎㄱ`);
+		expect(split.preserveOriginal).toBe(false);
+	});
+
+	it("keeps a full caption and moves every token into replies", () => {
+		const original = "가".repeat(TELEGRAM_CAPTION_LIMIT);
+		const split = splitCaptionAndFollowUps("한국 ㅎㄱ", original);
+		expect(split.caption).toBe(original);
+		expect(split.followUpMessages).toEqual(["한국 ㅎㄱ"]);
+		expect(split.preserveOriginal).toBe(false);
+	});
+
+	it("requires retaining an oversized original rather than truncating it", () => {
+		const original = "가".repeat(TELEGRAM_CAPTION_LIMIT) + "원본끝";
+		const split = splitCaptionAndFollowUps("한국 ㅎㄱ", original);
+		expect(split.preserveOriginal).toBe(true);
+		expect(split.caption).toBe("");
+		expect(split.followUpMessages).toEqual(["한국 ㅎㄱ"]);
+	});
 });

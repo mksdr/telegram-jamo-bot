@@ -124,6 +124,8 @@ export interface SearchTokenResult {
 export interface CaptionSplitResult {
 	caption: string;
 	followUpMessages: string[];
+	/** Keep the source media intact; follow-ups contain all search tokens. */
+	preserveOriginal: boolean;
 }
 
 function isHangulSyllable(code: number): boolean {
@@ -369,7 +371,8 @@ function packTokensUpToLimit(
 /**
  * Splits search tokens into a Telegram media caption (<= 1024 chars) and
  * follow-up text messages (<= 4096 chars each) at token boundaries.
- * Preserves any non-empty original caption at the start of the media caption.
+ * Keeps the original caption byte-for-byte so UTF-16 entity offsets remain valid.
+ * If it cannot fit, instructs the caller to retain the source instead of truncating it.
  */
 export function splitCaptionAndFollowUps(
 	searchText: string,
@@ -378,7 +381,8 @@ export function splitCaptionAndFollowUps(
 	messageLimit: number = TELEGRAM_MESSAGE_LIMIT,
 ): CaptionSplitResult {
 	const trimmedSearch = searchText.trim();
-	const trimmedOriginal = originalCaption?.trim() ?? "";
+	const original = originalCaption ?? "";
+	const preserveOriginal = codePointLength(original) > captionLimit;
 
 	const rawTokens = trimmedSearch.length > 0 ? trimmedSearch.split(/\s+/) : [];
 	const tokens: string[] = [];
@@ -393,19 +397,22 @@ export function splitCaptionAndFollowUps(
 	let caption = "";
 	let nextIdx = 0;
 
-	if (trimmedOriginal.length > 0) {
-		const origLen = codePointLength(trimmedOriginal);
-		if (origLen >= captionLimit) {
-			caption = sliceByCodePoints(trimmedOriginal, captionLimit);
+	if (preserveOriginal) {
+		// Leave the source caption and its entities untouched; only send search replies.
+		nextIdx = 0;
+	} else if (original.length > 0) {
+		const origLen = codePointLength(original);
+		if (origLen === captionLimit) {
+			caption = original;
 		} else {
 			const separator = "\n\n";
 			const remainingBudget = captionLimit - origLen - separator.length;
 			const packed = packTokensUpToLimit(tokens, 0, remainingBudget);
 			if (packed.chunk.length > 0) {
-				caption = `${trimmedOriginal}${separator}${packed.chunk}`;
+				caption = `${original}${separator}${packed.chunk}`;
 				nextIdx = packed.nextIndex;
 			} else {
-				caption = trimmedOriginal;
+				caption = original;
 			}
 		}
 	} else if (tokens.length > 0) {
@@ -438,5 +445,6 @@ export function splitCaptionAndFollowUps(
 	return {
 		caption,
 		followUpMessages,
+		preserveOriginal,
 	};
 }

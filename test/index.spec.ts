@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
@@ -7,6 +8,7 @@ const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 function createBaseEnv(overrides: Partial<Env> = {}): Env {
 	return {
+		...env,
 		TELEGRAM_BOT_TOKEN: "test-bot-token",
 		TELEGRAM_WEBHOOK_SECRET: "test-secret",
 		FULL_MODE_THRESHOLD: "10",
@@ -47,7 +49,7 @@ describe("Telegram Jamo Bot Worker", () => {
 	it("handles private chat document upload, resends with generated caption, and deletes original", async () => {
 		const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = typeof input === "string" ? input : input.url;
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = url.split("/").pop() ?? "";
 			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 			calls.push({ method, body });
@@ -106,7 +108,7 @@ describe("Telegram Jamo Bot Worker", () => {
 	it("handles supergroup forum topics and channel_post updates", async () => {
 		const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
 		const mockFetch = vi.fn<typeof fetch>(async (input, init) => {
-			const url = typeof input === "string" ? input : input.url;
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = url.split("/").pop() ?? "";
 			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 			calls.push({ method, body });
@@ -173,7 +175,7 @@ describe("Telegram Jamo Bot Worker", () => {
 	it("handles missing delete permission gracefully without throwing", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const mockFetch = vi.fn<typeof fetch>(async (input) => {
-			const url = typeof input === "string" ? input : input.url;
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = url.split("/").pop() ?? "";
 			if (method === "sendDocument") {
 				return Response.json({ ok: true, result: { message_id: 301 } });
@@ -212,7 +214,7 @@ describe("Telegram Jamo Bot Worker", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		const calls: string[] = [];
 		const mockFetch = vi.fn<typeof fetch>(async (input) => {
-			const url = typeof input === "string" ? input : input.url;
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = url.split("/").pop() ?? "";
 			calls.push(method);
 			return Response.json({
@@ -242,7 +244,7 @@ describe("Telegram Jamo Bot Worker", () => {
 	it("sends overflow tokens as reply messages when search text exceeds 1024 chars", async () => {
 		const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
 		const mockFetch = vi.fn<typeof fetch>(async (input, init) => {
-			const url = typeof input === "string" ? input : input.url;
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = url.split("/").pop() ?? "";
 			const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 			calls.push({ method, body });
