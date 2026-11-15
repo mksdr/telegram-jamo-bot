@@ -1,5 +1,7 @@
 import { DEFAULT_FULL_MODE_THRESHOLD } from "./hangul";
-import { processTelegramUpdate, type TelegramUpdate } from "./telegram";
+import { isUpdateComplete, type TelegramUpdate } from "./telegram";
+
+export { TelegramUpdateProcessor } from "./update-processor";
 
 /**
  * Constant-time string comparison to avoid timing leaks on webhook secret verification.
@@ -27,11 +29,13 @@ export default {
 		}
 
 		if (request.method === "POST" && (url.pathname === "/webhook" || url.pathname === "/")) {
-			if (env.TELEGRAM_WEBHOOK_SECRET) {
-				const providedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-				if (!providedSecret || !safeEqual(providedSecret, env.TELEGRAM_WEBHOOK_SECRET)) {
-					return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-				}
+			if (!env.TELEGRAM_WEBHOOK_SECRET?.trim()) {
+				console.error("Missing TELEGRAM_WEBHOOK_SECRET environment secret.");
+				return Response.json({ ok: false, error: "Webhook secret not configured" }, { status: 503 });
+			}
+			const providedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+			if (!providedSecret || !safeEqual(providedSecret, env.TELEGRAM_WEBHOOK_SECRET)) {
+				return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 			}
 
 			let update: TelegramUpdate;
@@ -41,7 +45,7 @@ export default {
 				return Response.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
 			}
 
-			if (!update || typeof update !== "object" || typeof update.update_id !== "number") {
+			if (!update || typeof update !== "object" || !Number.isSafeInteger(update.update_id) || update.update_id < 0) {
 				return Response.json({ ok: false, error: "Invalid Telegram update" }, { status: 400 });
 			}
 
@@ -56,14 +60,22 @@ export default {
 					? parsedThreshold
 					: DEFAULT_FULL_MODE_THRESHOLD;
 
-			ctx.waitUntil(
-				processTelegramUpdate(update, {
-					botToken: env.TELEGRAM_BOT_TOKEN,
-					threshold,
-				}).catch((error) => {
-					console.error("Unhandled Telegram update processing error:", error);
-				}),
-			);
+			try {
+				const botId = env.TELEGRAM_BOT_TOKEN.split(":")[0];
+				const processor = env.TELEGRAM_UPDATES.getByName(`${botId}:${update.update_id}`);
+				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold);
+				if (!isUpdateComplete(result)) {
+					console.error("Telegram update incomplete:", update.update_id, result.reason);
+					return Response.json({ ok: false, error: "Telegram update processing incomplete" }, {
+						status: 503,
+						headers: { "Retry-After": String(result.retryAfter ?? 1) },
+					});
+				}
+			} catch {
+				// Do not acknowledge a storage/RPC failure or log URLs containing the bot token.
+				console.error("Telegram update processing failed:", update.update_id);
+				return Response.json({ ok: false, error: "Telegram update processing failed" }, { status: 503 });
+			}
 
 			return Response.json({ ok: true }, { status: 200 });
 		}
