@@ -1,0 +1,2 @@
+TELEGRAM_BOT_TOKEN=123456789:your-telegram-bot-token
+TELEGRAM_WEBHOOK_SECRET=your-webhook-secret-token
