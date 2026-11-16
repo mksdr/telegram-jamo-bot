@@ -237,7 +237,7 @@ describe("Telegram Jamo Bot Worker", () => {
 			{ botToken: "token", fetchImpl: mockFetch },
 		);
 
-		expect(result).toEqual({ handled: false, reason: "resend_failed" });
+		expect(result).toEqual({ handled: false, reason: "resend_failed", needsReconciliation: true });
 		expect(calls).toEqual(["sendDocument"]);
 	});
 

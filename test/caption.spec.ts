@@ -108,7 +108,7 @@ describe("F05 original caption and entities", () => {
 		const result = await processTelegramUpdate(makeUpdate({
 			caption: "설명서", caption_entities: [{ type: "text_link", offset: 0, length: 3, url: "https://example.com/manual" }],
 		}), { botToken: "test-token", fetchImpl });
-		expect(result).toMatchObject({ handled: false, reason: "resend_failed" });
+		expect(result).toMatchObject({ handled: false, reason: "resend_failed", needsReconciliation: true });
 		expect(calls.map(c => c.method)).toEqual(["sendDocument"]);
 	});
 

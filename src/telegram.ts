@@ -85,6 +85,8 @@ export interface ProcessUpdateProgress {
 	captionPreserved?: boolean;
 	sentFollowUps: number;
 	pendingSend?: "media" | "follow_up";
+	/** A definite non-retryable send rejection, retained for operator reconciliation. */
+	blockedSend?: { reason: string; errorCode: number };
 	retryAt?: number;
 }
 
@@ -217,6 +219,9 @@ export async function processTelegramUpdate(
 	const save = async () => {
 		await options.saveProgress?.(progress);
 	};
+	if (progress.blockedSend) {
+		return { handled: false, reason: progress.blockedSend.reason, needsReconciliation: true };
+	}
 	if (progress.pendingSend) {
 		return { handled: false, reason: "delivery_uncertain", needsReconciliation: true };
 	}
@@ -232,6 +237,17 @@ export async function processTelegramUpdate(
 			// Keep the intent for reconciliation; never automatically repeat an ambiguous send.
 			await save();
 			return { handled: false, reason: "delivery_uncertain", needsReconciliation: true };
+		}
+		const errorCode = response.error_code;
+		if (progress.pendingSend && !response.uncertain && errorCode !== undefined &&
+			errorCode >= 400 && errorCode < 500 && errorCode !== 408 && errorCode !== 429) {
+			// Persist the rejection in the checkpoint, not just the final failure result.
+			// A restart or a failed final journal write must not repeat this send.
+			progress.blockedSend = { reason, errorCode };
+			delete progress.pendingSend;
+			delete progress.retryAt;
+			await save();
+			return { handled: false, reason, needsReconciliation: true };
 		}
 		delete progress.pendingSend;
 		const requestedDelay = response.parameters?.retry_after;

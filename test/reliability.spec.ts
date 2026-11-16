@@ -123,6 +123,76 @@ describe("F03 durable webhook processing", () => {
 		expect((await post(update)).status).toBe(200);
 		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(["sendDocument", "sendDocument", "deleteMessage"]);
 	});
+	it.each([400, 401, 403, 404])("holds a rejected media send (%s) across cooldowns and eviction", async errorCode => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const update = makeUpdate();
+		update.message!.caption = "설명서";
+		update.message!.caption_entities = [{ type: "text_link", offset: 0, length: 3, url: "https://example.com/manual" }];
+		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: errorCode }, { status: errorCode }));
+		expect((await post(update)).status).toBe(503);
+		const saved = await runInDurableObject(stubFor(update), (_, state) => state.storage.get<{ progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>("update"));
+		expect(saved?.progress.blockedSend).toEqual({ reason: "resend_failed", errorCode });
+		expect(saved?.progress.pendingSend).toBeUndefined();
+		expect(saved?.progress.retryAt).toBeUndefined();
+		expect(saved?.lastFailure.needsReconciliation).toBe(true);
+		expect((await post(update)).status).toBe(503);
+		await clearCooldown(update);
+		await evictDurableObject(stubFor(update));
+		expect((await post(update)).status).toBe(503);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(["sendDocument"]);
+		expect(await runDurableObjectAlarm(stubFor(update))).toBe(false);
+	});
+	it.each([400, 403])("holds a rejected follow-up (%s) without further sends or deletion", async errorCode => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const update = makeUpdate(true);
+		const outbound = mockSuccess()
+			.mockImplementationOnce(async () => Response.json({ ok: true, result: { message_id: 201 } }))
+			.mockImplementationOnce(async () => Response.json({ ok: false, error_code: errorCode }, { status: errorCode }));
+		expect((await post(update)).status).toBe(503);
+		await clearCooldown(update);
+		await evictDurableObject(stubFor(update));
+		expect((await post(update)).status).toBe(503);
+		const saved = await runInDurableObject(stubFor(update), (_, state) => state.storage.get<{ progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>("update"));
+		expect(saved?.progress).toMatchObject({ resentMessageId: 201, sentFollowUps: 0, blockedSend: { reason: "follow_up_failed", errorCode } });
+		expect(saved?.lastFailure.needsReconciliation).toBe(true);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(["sendDocument", "sendMessage"]);
+	});
+	it("keeps a send rejection blocked when the final failure journal write fails", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const update = makeUpdate();
+		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: 400 }, { status: 400 }));
+		await runInDurableObject(stubFor(update), (_, state) => {
+			const put = state.storage.put.bind(state.storage);
+			vi.spyOn(state.storage, "put")
+				.mockImplementationOnce(put).mockImplementationOnce(put).mockImplementationOnce(put)
+				.mockRejectedValueOnce(new Error("final journal write unavailable"));
+		});
+		expect((await post(update)).status).toBe(503);
+		await clearCooldown(update);
+		await evictDurableObject(stubFor(update));
+		expect((await post(update)).status).toBe(503);
+		expect(outbound).toHaveBeenCalledTimes(1);
+	});
+	it.each([400, 403])("still completes after a definite deletion rejection (%s)", async errorCode => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const outbound = mockSuccess()
+			.mockImplementationOnce(async () => Response.json({ ok: true, result: { message_id: 201 } }))
+			.mockImplementationOnce(async () => Response.json({ ok: false, error_code: errorCode }, { status: errorCode }));
+		expect((await post(makeUpdate())).status).toBe(200);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(["sendDocument", "deleteMessage"]);
+	});
+	it.each([408, 500])("retries a transient media rejection (%s) after cooldown and eviction", async errorCode => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const update = makeUpdate();
+		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: errorCode }, { status: errorCode }));
+		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(503);
+		expect(outbound).toHaveBeenCalledTimes(1);
+		await clearCooldown(update);
+		await evictDurableObject(stubFor(update));
+		expect((await post(update)).status).toBe(200);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(["sendDocument", "sendDocument", "deleteMessage"]);
+	});
 	it("resumes a failed follow-up without resending the file or deleting early", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		const update = makeUpdate(true);
