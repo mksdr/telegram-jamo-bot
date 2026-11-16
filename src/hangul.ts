@@ -6,104 +6,84 @@ export const DEFAULT_FULL_MODE_THRESHOLD = 10;
 export const TELEGRAM_CAPTION_LIMIT = 1024;
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
 
-const CHOSUNG = [
-	"ㄱ",
-	"ㄲ",
-	"ㄴ",
-	"ㄷ",
-	"ㄸ",
-	"ㄹ",
-	"ㅁ",
-	"ㅂ",
-	"ㅃ",
-	"ㅅ",
-	"ㅆ",
-	"ㅇ",
-	"ㅈ",
-	"ㅉ",
-	"ㅊ",
-	"ㅋ",
-	"ㅌ",
-	"ㅍ",
-	"ㅎ",
-] as const;
+const CHOSUNG = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'] as const;
 
 const JUNGSUNG = [
-	"ㅏ",
-	"ㅐ",
-	"ㅑ",
-	"ㅒ",
-	"ㅓ",
-	"ㅔ",
-	"ㅕ",
-	"ㅖ",
-	"ㅗ",
-	"ㅘ",
-	"ㅙ",
-	"ㅚ",
-	"ㅛ",
-	"ㅜ",
-	"ㅝ",
-	"ㅞ",
-	"ㅟ",
-	"ㅠ",
-	"ㅡ",
-	"ㅢ",
-	"ㅣ",
+	'ㅏ',
+	'ㅐ',
+	'ㅑ',
+	'ㅒ',
+	'ㅓ',
+	'ㅔ',
+	'ㅕ',
+	'ㅖ',
+	'ㅗ',
+	'ㅘ',
+	'ㅙ',
+	'ㅚ',
+	'ㅛ',
+	'ㅜ',
+	'ㅝ',
+	'ㅞ',
+	'ㅟ',
+	'ㅠ',
+	'ㅡ',
+	'ㅢ',
+	'ㅣ',
 ] as const;
 
 const JONGSUNG = [
-	"",
-	"ㄱ",
-	"ㄲ",
-	"ㄳ",
-	"ㄴ",
-	"ㄵ",
-	"ㄶ",
-	"ㄷ",
-	"ㄹ",
-	"ㄺ",
-	"ㄻ",
-	"ㄼ",
-	"ㄽ",
-	"ㄾ",
-	"ㄿ",
-	"ㅀ",
-	"ㅁ",
-	"ㅂ",
-	"ㅄ",
-	"ㅅ",
-	"ㅆ",
-	"ㅇ",
-	"ㅈ",
-	"ㅊ",
-	"ㅋ",
-	"ㅌ",
-	"ㅍ",
-	"ㅎ",
+	'',
+	'ㄱ',
+	'ㄲ',
+	'ㄳ',
+	'ㄴ',
+	'ㄵ',
+	'ㄶ',
+	'ㄷ',
+	'ㄹ',
+	'ㄺ',
+	'ㄻ',
+	'ㄼ',
+	'ㄽ',
+	'ㄾ',
+	'ㄿ',
+	'ㅀ',
+	'ㅁ',
+	'ㅂ',
+	'ㅄ',
+	'ㅅ',
+	'ㅆ',
+	'ㅇ',
+	'ㅈ',
+	'ㅊ',
+	'ㅋ',
+	'ㅌ',
+	'ㅍ',
+	'ㅎ',
 ] as const;
 
 const COMPOUND_JAMO_MAP: Record<string, readonly string[]> = {
 	// Compound vowels (이중모음)
-	"ㅘ": ["ㅗ", "ㅏ"],
-	"ㅙ": ["ㅗ", "ㅐ"],
-	"ㅚ": ["ㅗ", "ㅣ"],
-	"ㅝ": ["ㅜ", "ㅓ"],
-	"ㅞ": ["ㅜ", "ㅔ"],
-	"ㅟ": ["ㅜ", "ㅣ"],
-	"ㅢ": ["ㅡ", "ㅣ"],
+	ㅘ: ['ㅗ', 'ㅏ'],
+	ㅙ: ['ㅗ', 'ㅐ'],
+	ㅚ: ['ㅗ', 'ㅣ'],
+	ㅝ: ['ㅜ', 'ㅓ'],
+	ㅞ: ['ㅜ', 'ㅔ'],
+	ㅟ: ['ㅜ', 'ㅣ'],
+	ㅢ: ['ㅡ', 'ㅣ'],
 	// Compound codas (겹받침)
-	"ㄳ": ["ㄱ", "ㅅ"],
-	"ㄵ": ["ㄴ", "ㅈ"],
-	"ㄶ": ["ㄴ", "ㅎ"],
-	"ㄺ": ["ㄹ", "ㄱ"],
-	"ㄻ": ["ㄹ", "ㅁ"],
-	"ㄼ": ["ㄹ", "ㅂ"],
-	"ㄽ": ["ㄹ", "ㅅ"],
-	"ㄾ": ["ㄹ", "ㅌ"],
-	"ㄿ": ["ㄹ", "ㅍ"],
-	"ㅀ": ["ㄹ", "ㅎ"],
-	"ㅄ": ["ㅂ", "ㅅ"],
+	ㄳ: ['ㄱ', 'ㅅ'],
+	ㄵ: ['ㄴ', 'ㅈ'],
+	ㄶ: ['ㄴ', 'ㅎ'],
+	ㄺ: ['ㄹ', 'ㄱ'],
+	ㄻ: ['ㄹ', 'ㅁ'],
+	ㄼ: ['ㄹ', 'ㅂ'],
+	ㄽ: ['ㄹ', 'ㅅ'],
+	ㄾ: ['ㄹ', 'ㅌ'],
+	ㄿ: ['ㄹ', 'ㅍ'],
+	ㅀ: ['ㄹ', 'ㅎ'],
+	ㅄ: ['ㅂ', 'ㅅ'],
 };
 
 const WORD_SEPARATOR_REGEX = /[\s_\-.,;:!?()[\]{}<>/\\|+"'`~@#$%^&*=]+/u;
@@ -117,7 +97,7 @@ const COMPAT_JAMO_END = 0x3163;
 export interface SearchTokenResult {
 	tokens: string[];
 	text: string;
-	mode: "full" | "ngram";
+	mode: 'full' | 'ngram';
 	effectiveLength: number;
 }
 
@@ -155,8 +135,8 @@ function hasHangul(word: string): boolean {
  * preserving dotfiles like ".gitignore".
  */
 export function stripFileExtension(fileName: string): string {
-	const normalized = fileName.trim().normalize("NFC");
-	const lastDot = normalized.lastIndexOf(".");
+	const normalized = fileName.trim().normalize('NFC');
+	const lastDot = normalized.lastIndexOf('.');
 	if (lastDot > 0 && lastDot < normalized.length - 1) {
 		return normalized.slice(0, lastDot);
 	}
@@ -168,7 +148,7 @@ export function stripFileExtension(fileName: string): string {
  */
 export function splitIntoWords(stem: string): string[] {
 	return stem
-		.normalize("NFC")
+		.normalize('NFC')
 		.split(WORD_SEPARATOR_REGEX)
 		.filter((segment) => segment.length > 0);
 }
@@ -177,8 +157,8 @@ export function splitIntoWords(stem: string): string[] {
  * Extracts Hangul chosung (initial consonants) from a word.
  */
 export function extractChosung(word: string): string {
-	const normalized = word.normalize("NFC");
-	let result = "";
+	const normalized = word.normalize('NFC');
+	let result = '';
 	for (const ch of normalized) {
 		const code = ch.codePointAt(0);
 		if (code === undefined) continue;
@@ -198,7 +178,7 @@ export function extractChosung(word: string): string {
  * Pure non-Hangul words return an empty array.
  */
 export function decomposeToJamo(word: string): string[] {
-	const normalized = word.normalize("NFC");
+	const normalized = word.normalize('NFC');
 	if (!hasHangul(normalized)) {
 		return [];
 	}
@@ -240,7 +220,7 @@ export function generateWordNGrams(word: string): string[] {
 	const ngrams: string[] = [];
 	for (let i = 0; i < chars.length; i++) {
 		for (let j = i + 1; j <= chars.length; j++) {
-			ngrams.push(chars.slice(i, j).join(""));
+			ngrams.push(chars.slice(i, j).join(''));
 		}
 	}
 	return ngrams;
@@ -251,7 +231,7 @@ export function generateWordNGrams(word: string): string[] {
  */
 export function generatePrefixAccumulations(items: readonly string[]): string[] {
 	const prefixes: string[] = [];
-	let acc = "";
+	let acc = '';
 	for (const item of items) {
 		acc += item;
 		prefixes.push(acc);
@@ -264,14 +244,11 @@ export function generatePrefixAccumulations(items: readonly string[]): string[] 
  * Uses full mode (N-gram + chosung + jamo) when effective character count <= threshold,
  * and N-gram-only mode when > threshold.
  */
-export function generateSearchTokens(
-	fileName: string,
-	threshold: number = DEFAULT_FULL_MODE_THRESHOLD,
-): SearchTokenResult {
+export function generateSearchTokens(fileName: string, threshold: number = DEFAULT_FULL_MODE_THRESHOLD): SearchTokenResult {
 	const stem = stripFileExtension(fileName);
 	const words = splitIntoWords(stem);
 	const effectiveLength = words.reduce((sum, w) => sum + Array.from(w).length, 0);
-	const mode: "full" | "ngram" = effectiveLength <= threshold ? "full" : "ngram";
+	const mode: 'full' | 'ngram' = effectiveLength <= threshold ? 'full' : 'ngram';
 
 	const seen = new Set<string>();
 	const addTokens = (candidates: readonly string[]) => {
@@ -288,7 +265,7 @@ export function generateSearchTokens(
 	}
 
 	// 2 & 3. Chosung accumulation and Jamo accumulation only in full mode
-	if (mode === "full") {
+	if (mode === 'full') {
 		for (const word of words) {
 			if (!hasHangul(word)) continue;
 			const chosungChars = Array.from(extractChosung(word));
@@ -305,7 +282,7 @@ export function generateSearchTokens(
 	const tokens = Array.from(seen);
 	return {
 		tokens,
-		text: tokens.join(" "),
+		text: tokens.join(' '),
 		mode,
 		effectiveLength,
 	};
@@ -316,7 +293,7 @@ function codePointLength(str: string): number {
 }
 
 function sliceByCodePoints(str: string, maxLen: number): string {
-	return Array.from(str).slice(0, maxLen).join("");
+	return Array.from(str).slice(0, maxLen).join('');
 }
 
 /**
@@ -326,7 +303,7 @@ function splitOversizedToken(token: string, maxLen: number): string[] {
 	const chars = Array.from(token);
 	const chunks: string[] = [];
 	for (let i = 0; i < chars.length; i += maxLen) {
-		chunks.push(chars.slice(i, i + maxLen).join(""));
+		chunks.push(chars.slice(i, i + maxLen).join(''));
 	}
 	return chunks;
 }
@@ -335,13 +312,9 @@ function splitOversizedToken(token: string, maxLen: number): string[] {
  * Packs space-separated tokens into chunks of at most `maxLen` code points,
  * returning the consumed index or packing all tokens into an array of messages.
  */
-function packTokensUpToLimit(
-	tokens: readonly string[],
-	startIndex: number,
-	maxLen: number,
-): { chunk: string; nextIndex: number } {
+function packTokensUpToLimit(tokens: readonly string[], startIndex: number, maxLen: number): { chunk: string; nextIndex: number } {
 	if (startIndex >= tokens.length || maxLen <= 0) {
-		return { chunk: "", nextIndex: startIndex };
+		return { chunk: '', nextIndex: startIndex };
 	}
 
 	const selected: string[] = [];
@@ -363,7 +336,7 @@ function packTokensUpToLimit(
 	}
 
 	return {
-		chunk: selected.join(" "),
+		chunk: selected.join(' '),
 		nextIndex: idx,
 	};
 }
@@ -381,7 +354,7 @@ export function splitCaptionAndFollowUps(
 	messageLimit: number = TELEGRAM_MESSAGE_LIMIT,
 ): CaptionSplitResult {
 	const trimmedSearch = searchText.trim();
-	const original = originalCaption ?? "";
+	const original = originalCaption ?? '';
 	const preserveOriginal = codePointLength(original) > captionLimit;
 
 	const rawTokens = trimmedSearch.length > 0 ? trimmedSearch.split(/\s+/) : [];
@@ -394,7 +367,7 @@ export function splitCaptionAndFollowUps(
 		}
 	}
 
-	let caption = "";
+	let caption = '';
 	let nextIdx = 0;
 
 	if (preserveOriginal) {
@@ -405,7 +378,7 @@ export function splitCaptionAndFollowUps(
 		if (origLen === captionLimit) {
 			caption = original;
 		} else {
-			const separator = "\n\n";
+			const separator = '\n\n';
 			const remainingBudget = captionLimit - origLen - separator.length;
 			const packed = packTokensUpToLimit(tokens, 0, remainingBudget);
 			if (packed.chunk.length > 0) {
