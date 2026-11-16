@@ -1,0 +1,29 @@
+name: 변경 요청 제목 검사
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 제목 형식 검사
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const pattern = /^(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9][a-z0-9-]*\))?!?: \S[^\r\n]*$/u;
+            if (title !== title.trim() || !pattern.test(title)) {
+              core.setFailed('제목은 "타입(선택 범위): 설명" 형식이어야 합니다. 설명은 한국어를 우선하며 CONTRIBUTING.md를 참고해 주세요.');
+            }

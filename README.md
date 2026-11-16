@@ -1,18 +1,20 @@
 # 텔레그램 한글 자모 봇
 
+[![자동 검증](https://github.com/mksdr/telegram-jamo-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mksdr/telegram-jamo-bot/actions/workflows/ci.yml)
+
 텔레그램에 올린 파일을 한글 일부, 초성, 자모로 찾을 수 있도록 파일명에서 검색어를 생성하는 봇입니다. Cloudflare Workers에서 웹훅을 받아 검색어를 캡션과 답글로 게시합니다.
 
 예를 들어 `한국.pdf`에서 `한국`, `ㅎㄱ`, `ㅎㅏㄴㄱㅜㄱ` 등의 검색어를 만듭니다.
 
 ## 사용된 Cloudflare 리소스
 
-| 리소스 | 용도 |
-|---|---|
-| Workers | Telegram 웹훅 수신, 인증, 검색어 생성 및 Bot API 호출 |
+| 리소스                      | 용도                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------- |
+| Workers                     | Telegram 웹훅 수신, 인증, 검색어 생성 및 Bot API 호출                                        |
 | SQLite 기반 Durable Objects | `TELEGRAM_UPDATES` 바인딩으로 봇·업데이트별 진행 상태 저장, 동시 요청 병합 및 중복 처리 방지 |
-| Durable Object alarms | 완료 기록을 7일 후 정리 |
-| Workers Secrets | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` 보관 |
-| Workers Observability | 처리 실패·보류·원본 삭제 실패 로그 확인 |
+| Durable Object alarms       | 완료 기록을 7일 후 정리                                                                      |
+| Workers Secrets             | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` 보관                                         |
+| Workers Observability       | 처리 실패·보류·원본 삭제 실패 로그 확인                                                      |
 
 Durable Objects의 SQLite 저장소를 사용하며 별도 D1, KV, R2, Queues 바인딩은 필요하지 않습니다.
 
@@ -113,14 +115,18 @@ with urllib.request.urlopen(request, timeout=15) as response:
 ## 검증
 
 ```sh
-npm test -- --run
-npx tsc --noEmit
-npx tsc --noEmit -p test/tsconfig.json
+npm run format:check
+npm run typecheck
+npm run test:ci
 ```
 
 회귀 테스트는 실제 Workers/Durable Objects 로컬 런타임을 사용하며 Telegram API 호출은 모의 처리합니다. 인증 실패, 완료 전 응답 방지, 429 대기, 부분 전송 재개, 동시·순차 중복 수신, 객체 재시작, 저장 오류, 불명확한 전송 보류, API 타임아웃, 캡션·엔티티 보존과 긴 캡션의 원본 유지 경로를 검증합니다.
 
 공식 문서: [Telegram 웹훅](https://core.telegram.org/bots/api#setwebhook), [Telegram 오류 매개변수](https://core.telegram.org/bots/api#responseparameters), [Durable Objects](https://developers.cloudflare.com/durable-objects/), [Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/).
+
+## 기여와 보안
+
+커밋 메시지와 변경 요청 제목은 Conventional Commits 형식을 따르며 설명은 한국어를 우선합니다. 개발·검증·병합 절차는 [기여 안내](CONTRIBUTING.md), 취약점 비공개 제보는 [보안 정책](SECURITY.md)을 참고하세요.
 
 ## 라이선스
 
