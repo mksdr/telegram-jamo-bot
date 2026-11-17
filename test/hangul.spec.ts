@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
 	DEFAULT_FULL_MODE_THRESHOLD,
+	MAX_SEARCH_TEXT_LENGTH,
 	TELEGRAM_CAPTION_LIMIT,
 	TELEGRAM_MESSAGE_LIMIT,
 	decomposeToJamo,
 	extractChosung,
 	generateSearchTokens,
+	generateWordNGrams,
 	splitCaptionAndFollowUps,
 	splitIntoWords,
 	stripFileExtension,
@@ -133,5 +135,41 @@ describe('hangul search token generator', () => {
 		expect(split.preserveOriginal).toBe(true);
 		expect(split.caption).toBe('');
 		expect(split.followUpMessages).toEqual(['한국 ㅎㄱ']);
+	});
+
+	it('keeps the first tokens in the caption and two replies, omitting the rest', () => {
+		const split = splitCaptionAndFollowUps('가 나 다 라 마 바 사 아 자 차 카 타', undefined, 5, 5);
+		expect(split.caption).toBe('가 나 다');
+		expect(split.followUpMessages).toEqual(['라 마 바', '사 아 자']);
+	});
+
+	it.each(['원본캡션유지', '원본캡션유지초과'])('limits replies while preserving the original caption: %s', (original) => {
+		const split = splitCaptionAndFollowUps('가 나 다 라 마 바 사 아 자 차 카 타', original, 6, 5);
+		expect(split.caption).toBe(original.length === 6 ? original : '');
+		expect(split.preserveOriginal).toBe(original.length > 6);
+		expect(split.followUpMessages).toEqual(['가 나 다', '라 마 바']);
+	});
+
+	it('keeps token order rather than skipping a longer token to include later ones', () => {
+		const split = splitCaptionAndFollowUps('aaa bbbb cc ddd e f', undefined, 3, 4);
+		expect(split.caption).toBe('aaa');
+		expect(split.followUpMessages).toEqual(['bbbb', 'cc']);
+	});
+
+	it('caps oversized Unicode tokens without breaking surrogate pairs', () => {
+		const split = splitCaptionAndFollowUps('😀'.repeat(15), undefined, 2, 3);
+		expect(split.caption).toBe('');
+		expect(split.followUpMessages).toEqual(['😀😀😀', '😀😀😀']);
+	});
+
+	it('stops generation at the output budget while preserving the original token prefix', () => {
+		const stem = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.repeat(4);
+		const allTokens = Array.from(new Set(generateWordNGrams(stem)));
+		const result = generateSearchTokens(`${stem}.pdf`);
+		expect(Array.from(result.text).length).toBeLessThanOrEqual(MAX_SEARCH_TEXT_LENGTH);
+		expect(result.tokens.length).toBeLessThan(allTokens.length);
+		expect(result.tokens).toEqual(allTokens.slice(0, result.tokens.length));
+		expect(Array.from(`${result.text} ${allTokens[result.tokens.length]}`).length).toBeGreaterThan(MAX_SEARCH_TEXT_LENGTH);
+		expect(splitCaptionAndFollowUps(result.text).followUpMessages).toHaveLength(2);
 	});
 });
