@@ -259,11 +259,17 @@ describe('F03 durable webhook processing', () => {
 			.mockImplementationOnce(async () => Response.json({ ok: false, error_code: 429, parameters: { retry_after: 10 } }, { status: 429 }));
 		expect((await post(update)).status).toBe(503);
 		const firstChunk = JSON.parse(String(outbound.mock.calls[1][1]?.body)).text;
+		const secondChunk = JSON.parse(String(outbound.mock.calls[2][1]?.body)).text;
 		await clearCooldown(update);
+		await evictDurableObject(stubFor(update));
 		expect((await post(update)).status).toBe(200);
 		const followUps = outbound.mock.calls.filter(([input]) => methodOf(input) === 'sendMessage');
-		expect(followUps).toHaveLength(4); // 3 distinct chunks, one rejected attempt.
+		expect(followUps).toHaveLength(3); // 2 distinct chunks, one rejected attempt.
 		expect(followUps.filter(([, init]) => JSON.parse(String(init?.body)).text === firstChunk)).toHaveLength(1);
+		expect(JSON.parse(String(followUps[2][1]?.body)).text).toBe(secondChunk);
+		const completedCalls = outbound.mock.calls.length;
+		expect((await post(update)).status).toBe(200);
+		expect(outbound).toHaveBeenCalledTimes(completedCalls);
 	});
 	it('retries transient deletion without repeating successful sends', async () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -359,6 +365,53 @@ describe('F03 durable webhook processing', () => {
 });
 
 describe('F04 duplicate update protection', () => {
+	it.each(['none', 'full', 'oversized', 'unsafe_entities'])(
+		'caps long-filename replies across duplicate delivery: %s caption',
+		async (mode) => {
+			const update = makeUpdate();
+			update.message!.document!.file_name = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.repeat(4) + '.pdf';
+			if (mode === 'full') update.message!.caption = '가'.repeat(1024);
+			if (mode === 'oversized') update.message!.caption = '가'.repeat(1100);
+			if (mode === 'unsafe_entities') {
+				update.message!.caption = '설명서';
+				update.message!.caption_entities = [{ type: 'bold', offset: -1, length: 1 }];
+			}
+			const outbound = mockSuccess();
+			expect((await post(update)).status).toBe(200);
+			const preserveOriginal = mode === 'oversized' || mode === 'unsafe_entities';
+			expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(
+				preserveOriginal ? ['sendMessage', 'sendMessage'] : ['sendDocument', 'sendMessage', 'sendMessage', 'deleteMessage'],
+			);
+			const replies = outbound.mock.calls.filter(([input]) => methodOf(input) === 'sendMessage');
+			for (const [, init] of replies) {
+				const payload = JSON.parse(String(init?.body));
+				expect(Array.from(payload.text).length).toBeLessThanOrEqual(4096);
+				expect(payload.reply_parameters.message_id).toBe(preserveOriginal ? 50 : 200);
+			}
+			if (mode === 'full') expect(JSON.parse(String(outbound.mock.calls[0][1]?.body)).caption).toBe(update.message!.caption);
+			const completedCalls = outbound.mock.calls.length;
+			await evictDurableObject(stubFor(update));
+			expect((await post(update)).status).toBe(200);
+			expect(outbound).toHaveBeenCalledTimes(completedCalls);
+		},
+	);
+
+	it.each([2, 3])('does not add replies to a legacy journal with %s already sent', async (sentFollowUps) => {
+		const update = makeUpdate();
+		update.message!.document!.file_name = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.repeat(4) + '.pdf';
+		await runInDurableObject(stubFor(update), async (_, state) => {
+			await state.storage.put('update', {
+				update,
+				threshold: 10,
+				progress: { resentMessageId: 200, captionPreserved: true, sentFollowUps },
+			});
+		});
+		await evictDurableObject(stubFor(update));
+		const outbound = mockSuccess();
+		expect((await post(update)).status).toBe(200);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['deleteMessage']);
+	});
+
 	it('does not repeat media, follow-ups or deletion on sequential webhook aliases', async () => {
 		const update = makeUpdate(true);
 		const outbound = mockSuccess();

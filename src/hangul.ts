@@ -5,6 +5,9 @@
 export const DEFAULT_FULL_MODE_THRESHOLD = 10;
 export const TELEGRAM_CAPTION_LIMIT = 1024;
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
+export const MAX_FOLLOW_UP_MESSAGES = 2;
+// Include the spaces between the caption and replies in the generated token text.
+export const MAX_SEARCH_TEXT_LENGTH = TELEGRAM_CAPTION_LIMIT + MAX_FOLLOW_UP_MESSAGES * (TELEGRAM_MESSAGE_LIMIT + 1);
 
 const CHOSUNG = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'] as const;
 
@@ -216,33 +219,39 @@ export function decomposeToJamo(word: string): string[] {
  * Generates all contiguous substrings (N-grams) for a word in start-index order.
  */
 export function generateWordNGrams(word: string): string[] {
+	return Array.from(iterateWordNGrams(word));
+}
+
+function* iterateWordNGrams(word: string): Generator<string> {
 	const chars = Array.from(word);
-	const ngrams: string[] = [];
 	for (let i = 0; i < chars.length; i++) {
 		for (let j = i + 1; j <= chars.length; j++) {
-			ngrams.push(chars.slice(i, j).join(''));
+			yield chars.slice(i, j).join('');
 		}
 	}
-	return ngrams;
 }
 
 /**
  * Generates cumulative prefixes from a sequence of units (e.g., ["ㅎ","ㄱ"] -> ["ㅎ","ㅎㄱ"]).
  */
 export function generatePrefixAccumulations(items: readonly string[]): string[] {
-	const prefixes: string[] = [];
+	return Array.from(iteratePrefixAccumulations(items));
+}
+
+function* iteratePrefixAccumulations(items: readonly string[]): Generator<string> {
 	let acc = '';
 	for (const item of items) {
 		acc += item;
-		prefixes.push(acc);
+		yield acc;
 	}
-	return prefixes;
 }
 
 /**
  * Generates deduplicated search tokens for a filename.
  * Uses full mode (N-gram + chosung + jamo) when effective character count <= threshold,
  * and N-gram-only mode when > threshold.
+ * Stops at the first new token exceeding the output budget, retaining a prefix
+ * of the original order without materializing all substring candidates.
  */
 export function generateSearchTokens(fileName: string, threshold: number = DEFAULT_FULL_MODE_THRESHOLD): SearchTokenResult {
 	const stem = stripFileExtension(fileName);
@@ -251,17 +260,26 @@ export function generateSearchTokens(fileName: string, threshold: number = DEFAU
 	const mode: 'full' | 'ngram' = effectiveLength <= threshold ? 'full' : 'ngram';
 
 	const seen = new Set<string>();
-	const addTokens = (candidates: readonly string[]) => {
+	let textLength = 0;
+	const result = (): SearchTokenResult => {
+		const tokens = Array.from(seen);
+		return { tokens, text: tokens.join(' '), mode, effectiveLength };
+	};
+	const addTokens = (candidates: Iterable<string>): boolean => {
 		for (const token of candidates) {
 			if (token && !seen.has(token)) {
+				const needed = codePointLength(token) + (seen.size > 0 ? 1 : 0);
+				if (textLength + needed > MAX_SEARCH_TEXT_LENGTH) return false;
 				seen.add(token);
+				textLength += needed;
 			}
 		}
+		return true;
 	};
 
 	// 1. Word-level character N-grams (partial & cumulative syllables)
 	for (const word of words) {
-		addTokens(generateWordNGrams(word));
+		if (!addTokens(iterateWordNGrams(word))) return result();
 	}
 
 	// 2 & 3. Chosung accumulation and Jamo accumulation only in full mode
@@ -269,23 +287,17 @@ export function generateSearchTokens(fileName: string, threshold: number = DEFAU
 		for (const word of words) {
 			if (!hasHangul(word)) continue;
 			const chosungChars = Array.from(extractChosung(word));
-			addTokens(generatePrefixAccumulations(chosungChars));
+			if (!addTokens(iteratePrefixAccumulations(chosungChars))) return result();
 		}
 
 		for (const word of words) {
 			const jamoChars = decomposeToJamo(word);
 			if (jamoChars.length === 0) continue;
-			addTokens(generatePrefixAccumulations(jamoChars));
+			if (!addTokens(iteratePrefixAccumulations(jamoChars))) return result();
 		}
 	}
 
-	const tokens = Array.from(seen);
-	return {
-		tokens,
-		text: tokens.join(' '),
-		mode,
-		effectiveLength,
-	};
+	return result();
 }
 
 function codePointLength(str: string): number {
@@ -343,7 +355,8 @@ function packTokensUpToLimit(tokens: readonly string[], startIndex: number, maxL
 
 /**
  * Splits search tokens into a Telegram media caption (<= 1024 chars) and
- * follow-up text messages (<= 4096 chars each) at token boundaries.
+ * at most two follow-up text messages (<= 4096 chars each) at token boundaries.
+ * Keeps tokens in order and discards any remaining search tokens after the cap.
  * Keeps the original caption byte-for-byte so UTF-16 entity offsets remain valid.
  * If it cannot fit, instructs the caller to retain the source instead of truncating it.
  */
@@ -400,7 +413,7 @@ export function splitCaptionAndFollowUps(
 	}
 
 	const followUpMessages: string[] = [];
-	while (nextIdx < tokens.length) {
+	while (nextIdx < tokens.length && followUpMessages.length < MAX_FOLLOW_UP_MESSAGES) {
 		const packed = packTokensUpToLimit(tokens, nextIdx, messageLimit);
 		if (packed.chunk.length === 0) {
 			// Safety guard against stall if a token exceeds messageLimit
