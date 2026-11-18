@@ -1,6 +1,8 @@
 # 텔레그램 한글 자모 봇
 
-[![자동 검증](https://github.com/mksdr/telegram-jamo-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mksdr/telegram-jamo-bot/actions/workflows/ci.yml)
+[![GitHub License](https://img.shields.io/github/license/mksdr/telegram-jamo-bot)](LICENSE)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/mksdr/telegram-jamo-bot/ci.yml)](https://github.com/mksdr/telegram-jamo-bot/actions/workflows/ci.yml)
+![GitHub repo size](https://img.shields.io/github/repo-size/mksdr/telegram-jamo-bot)
 
 텔레그램에 올린 파일을 한글 일부, 초성, 자모로 찾을 수 있도록 파일명에서 검색어를 생성하는 봇입니다. Cloudflare Workers에서 웹훅을 받아 검색어를 캡션과 답글로 게시합니다.
 
