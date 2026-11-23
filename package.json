@@ -14,7 +14,7 @@
 		"test:ci": "vitest run"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-plugin": "^1.4.3",
+		"@cloudflare/vitest-plugin": "^1.8.5",
 		"@types/node": "^26.6.6",
 		"prettier": "3.10.1",
 		"typescript": "^7.0.2",
