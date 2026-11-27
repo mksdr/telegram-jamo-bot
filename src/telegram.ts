@@ -1,4 +1,4 @@
-import { generateSearchTokens, splitCaptionAndFollowUps } from './hangul';
+import { generateSearchTokens, getFileNameWords, splitCaptionAndFollowUps } from './hangul';
 
 export interface TelegramUser {
 	id: number;
@@ -171,6 +171,19 @@ export function extractTargetMedia(message: TelegramMessage): TargetMedia | null
 	return null;
 }
 
+export function classifyTelegramUpdate(
+	update: TelegramUpdate,
+): { message: TelegramMessage; media: TargetMedia } | { handled: false; reason: string } {
+	const message = update.message ?? update.channel_post;
+	if (!message) return { handled: false, reason: 'no_message' };
+	if (message.from?.is_bot) return { handled: false, reason: 'from_bot' };
+	const media = extractTargetMedia(message);
+	if (!media) return { handled: false, reason: 'no_supported_file' };
+	// A nonempty word always yields at least its first character as a token.
+	if (getFileNameWords(media.fileName).length === 0) return { handled: false, reason: 'empty_tokens' };
+	return { message, media };
+}
+
 /**
  * Calls a Telegram Bot API method safely, catching network and JSON parsing errors.
  */
@@ -237,6 +250,9 @@ export async function processTelegramUpdate(update: TelegramUpdate, options: Pro
 	if (progress.retryAt && progress.retryAt > Date.now()) {
 		return { handled: false, reason: 'retry_later', retryAfter: Math.ceil((progress.retryAt - Date.now()) / 1000) };
 	}
+	const classified = classifyTelegramUpdate(update);
+	if ('reason' in classified) return classified;
+	const { message: msg, media } = classified;
 	const deadline = Date.now() + UPDATE_TIME_BUDGET_MS;
 	const request = async <T>(method: string, payload: Record<string, unknown>) =>
 		callTelegramApi<T>(
@@ -279,13 +295,7 @@ export async function processTelegramUpdate(update: TelegramUpdate, options: Pro
 		return { handled: false, reason, ...(retryAfter !== undefined ? { retryAfter } : {}) };
 	};
 	const budgetExceeded = () => Date.now() >= deadline;
-	const msg = update.message ?? update.channel_post;
-	if (!msg) return { handled: false, reason: 'no_message' };
-	if (msg.from?.is_bot) return { handled: false, reason: 'from_bot' };
-	const media = extractTargetMedia(msg);
-	if (!media) return { handled: false, reason: 'no_supported_file' };
 	const { text } = generateSearchTokens(media.fileName, options.threshold);
-	if (!text) return { handled: false, reason: 'empty_tokens' };
 	const split = splitCaptionAndFollowUps(text, msg.caption);
 	const preserveOriginal = split.preserveOriginal || !canPreserveCaptionEntities(msg.caption ?? '', msg.caption_entities);
 	const { caption, followUpMessages } = preserveOriginal ? splitCaptionAndFollowUps(text, undefined, 0) : split;

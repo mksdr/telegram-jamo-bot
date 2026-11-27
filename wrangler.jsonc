@@ -18,6 +18,14 @@
 		"bindings": [{ "name": "TELEGRAM_UPDATES", "class_name": "TelegramUpdateProcessor" }],
 	},
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["TelegramUpdateProcessor"] }],
+	"previews": {
+		"vars": {
+			"FULL_MODE_THRESHOLD": "10",
+		},
+		"durable_objects": {
+			"bindings": [{ "name": "TELEGRAM_UPDATES", "class_name": "TelegramUpdateProcessor" }],
+		},
+	},
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
