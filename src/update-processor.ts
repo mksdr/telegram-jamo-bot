@@ -3,7 +3,6 @@ import {
 	classifyTelegramUpdate,
 	isUpdateComplete,
 	processTelegramUpdate,
-	UPDATE_TIME_BUDGET_MS,
 	type ProcessUpdateProgress,
 	type ProcessUpdateResult,
 	type TargetMedia,
@@ -99,17 +98,19 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 			await this.ctx.storage.put('update', { result });
 			return result;
 		}
-		if (firstFailure) {
+		if (result.needsReconciliation) console.error('Telegram delivery requires reconciliation:', state.update.update_id, result.reason);
+		if (firstFailure && stored?.expiresAt === undefined) {
 			state.expiresAt = Date.now() + PENDING_RETENTION_MS;
 			if (state.expiresAt !== expiresAt) await this.ctx.storage.setAlarm(state.expiresAt);
 		}
 		state.lastFailure = result;
 		await this.ctx.storage.put('update', state);
-		if (result.needsReconciliation) console.error('Telegram delivery requires reconciliation:', state.update.update_id, result.reason);
 		return result;
 	}
 
 	async alarm(): Promise<void> {
+		// The processor may replace the pending alarm with completion cleanup. Read its final journal even if processing failed.
+		while (this.inFlight) await this.inFlight.catch(() => undefined);
 		const state = await this.ctx.storage.get<StoredUpdate>('update');
 		if (!state) return;
 		if ('result' in state) {
@@ -124,9 +125,6 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 			state.expiresAt = now + PENDING_RETENTION_MS;
 			await this.ctx.storage.setAlarm(state.expiresAt);
 			await this.ctx.storage.put('update', state);
-		} else if (this.inFlight) {
-			// An external request can yield to an alarm. Let its journal writes finish before deleting.
-			await this.ctx.storage.setAlarm(Math.max(state.expiresAt, now + UPDATE_TIME_BUDGET_MS));
 		} else if (state.expiresAt > now) {
 			await this.ctx.storage.setAlarm(state.expiresAt);
 		} else {
