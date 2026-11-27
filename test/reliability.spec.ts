@@ -145,17 +145,21 @@ describe('F03 durable webhook processing', () => {
 		}
 		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: 429 }, { status: 429 }));
 		expect((await post(update)).status).toBe(503);
-		const saved = await runInDurableObject(stub, (_, state) => state.storage.get<{ update: TelegramUpdate }>('update'));
-		expect(saved).toMatchObject({ threshold: 10, progress: { sentFollowUps: 0 }, lastFailure: { reason: 'resend_failed' } });
-		expect(saved?.update).toStrictEqual({
-			update_id: update.update_id,
-			channel_post: {
-				chat: { id: -100123 },
-				message_id: 50,
-				message_thread_id: 12,
-				caption,
-				caption_entities: entities,
-				audio: { file_id: 'audio-file', file_name: '한국.mp3' },
+		const saved = await runInDurableObject(stub, (_, state) => state.storage.get('update'));
+		expect(saved).toStrictEqual({
+			threshold: 10,
+			progress: { sentFollowUps: 0, retryAt: expect.any(Number) },
+			lastFailure: { handled: false, reason: 'resend_failed' },
+			update: {
+				update_id: update.update_id,
+				channel_post: {
+					chat: { id: -100123 },
+					message_id: 50,
+					message_thread_id: 12,
+					caption,
+					caption_entities: entities,
+					audio: { file_id: 'audio-file', file_name: '한국.mp3' },
+				},
 			},
 		});
 		await clearCooldown(update);
