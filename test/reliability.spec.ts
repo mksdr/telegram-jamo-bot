@@ -343,10 +343,63 @@ describe('F03 durable webhook processing', () => {
 		expect((await post(update)).status).toBe(503);
 		expect(outbound).toHaveBeenCalledTimes(1);
 	});
-	it('ignores unsupported updates successfully', async () => {
+	const groupMessage = {
+		message_id: 50,
+		chat: { id: -100123, type: 'supergroup' as const },
+		from: { id: 1, is_bot: false, first_name: 'Example', username: 'example_user' },
+	};
+	it.each([
+		{ reason: 'no_message', payload: { edited_message: { ...groupMessage, text: 'An edited message' } } },
+		{
+			reason: 'no_supported_file',
+			payload: {
+				message: {
+					...groupMessage,
+					text: 'A sample group conversation',
+					reply_to_message: { ...groupMessage, message_id: 49, text: 'Earlier conversation' },
+				},
+			},
+		},
+		{
+			reason: 'from_bot',
+			payload: { message: { ...groupMessage, from: { id: 2, is_bot: true }, document: { file_id: 'file', file_name: '한국.pdf' } } },
+		},
+		{
+			reason: 'empty_tokens',
+			payload: {
+				channel_post: {
+					message_id: 50,
+					chat: { id: -100123, type: 'channel' as const },
+					document: { file_id: 'file', file_name: '___-.pdf' },
+				},
+			},
+		},
+	])('acknowledges $reason without a Durable Object lookup, journal or alarm', async ({ reason, payload }) => {
+		const update = { update_id: nextId++, ...payload };
 		const outbound = mockSuccess();
-		expect((await post({ update_id: nextId++ })).status).toBe(200);
+		const getByName = vi.fn(() => stubFor(update));
+		const binding = { getByName } as unknown as Env['TELEGRAM_UPDATES'];
+		const response = await post(update, { TELEGRAM_UPDATES: binding });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+		expect(getByName).not.toHaveBeenCalled();
+
+		const stub = stubFor(update);
+		expect(await stub.process(update, token, 10)).toEqual({ handled: false, reason });
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.list()).toEqual(new Map());
+			expect(await state.storage.getAlarm()).toBeNull();
+		});
 		expect(outbound).not.toHaveBeenCalled();
+	});
+	it('requires a bot token only for a processable update', async () => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const overrides = { TELEGRAM_BOT_TOKEN: undefined };
+		const ignored = await post({ update_id: nextId++ }, overrides, secret, '/');
+		expect(ignored.status).toBe(200);
+		expect(await ignored.json()).toEqual({ ok: true });
+		expect(logError).not.toHaveBeenCalled();
+		expect((await post(makeUpdate(), overrides)).status).toBe(500);
 	});
 	it('cleans completed journals after retention while keeping unresolved work', async () => {
 		const update = makeUpdate();

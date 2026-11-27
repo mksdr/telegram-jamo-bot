@@ -1,5 +1,5 @@
 import { DEFAULT_FULL_MODE_THRESHOLD } from './hangul';
-import { isUpdateComplete, type TelegramUpdate } from './telegram';
+import { classifyTelegramUpdate, isUpdateComplete, type TelegramUpdate } from './telegram';
 
 export { TelegramUpdateProcessor } from './update-processor';
 
@@ -49,15 +49,16 @@ export default {
 				return Response.json({ ok: false, error: 'Invalid Telegram update' }, { status: 400 });
 			}
 
-			if (!env.TELEGRAM_BOT_TOKEN) {
-				console.error('Missing TELEGRAM_BOT_TOKEN environment secret.');
-				return Response.json({ ok: false, error: 'Bot token not configured' }, { status: 500 });
-			}
-
-			const parsedThreshold = Number.parseInt(env.FULL_MODE_THRESHOLD ?? '', 10);
-			const threshold = Number.isFinite(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_FULL_MODE_THRESHOLD;
-
 			try {
+				if ('reason' in classifyTelegramUpdate(update)) return Response.json({ ok: true }, { status: 200 });
+
+				if (!env.TELEGRAM_BOT_TOKEN) {
+					console.error('Missing TELEGRAM_BOT_TOKEN environment secret.');
+					return Response.json({ ok: false, error: 'Bot token not configured' }, { status: 500 });
+				}
+
+				const parsedThreshold = Number.parseInt(env.FULL_MODE_THRESHOLD ?? '', 10);
+				const threshold = Number.isFinite(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_FULL_MODE_THRESHOLD;
 				const botId = env.TELEGRAM_BOT_TOKEN.split(':')[0];
 				const processor = env.TELEGRAM_UPDATES.getByName(`${botId}:${update.update_id}`);
 				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold);

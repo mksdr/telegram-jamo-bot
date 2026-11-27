@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+	classifyTelegramUpdate,
 	isUpdateComplete,
 	processTelegramUpdate,
 	type ProcessUpdateProgress,
@@ -35,6 +36,8 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 		let state = await this.ctx.storage.get<StoredUpdate>('update');
 		if (state?.result) return state.result;
 		if (!state) {
+			const classified = classifyTelegramUpdate(update);
+			if ('reason' in classified) return classified;
 			state = { update, threshold, progress: { sentFollowUps: 0 } };
 			await this.ctx.storage.put('update', state);
 		}

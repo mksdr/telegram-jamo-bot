@@ -156,6 +156,10 @@ export function splitIntoWords(stem: string): string[] {
 		.filter((segment) => segment.length > 0);
 }
 
+export function getFileNameWords(fileName: string): string[] {
+	return splitIntoWords(stripFileExtension(fileName));
+}
+
 /**
  * Extracts Hangul chosung (initial consonants) from a word.
  */
@@ -254,8 +258,7 @@ function* iteratePrefixAccumulations(items: readonly string[]): Generator<string
  * of the original order without materializing all substring candidates.
  */
 export function generateSearchTokens(fileName: string, threshold: number = DEFAULT_FULL_MODE_THRESHOLD): SearchTokenResult {
-	const stem = stripFileExtension(fileName);
-	const words = splitIntoWords(stem);
+	const words = getFileNameWords(fileName);
 	const effectiveLength = words.reduce((sum, w) => sum + Array.from(w).length, 0);
 	const mode: 'full' | 'ngram' = effectiveLength <= threshold ? 'full' : 'ngram';
 
