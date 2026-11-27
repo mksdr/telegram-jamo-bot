@@ -15,6 +15,9 @@ import {
 let nextId = 1_000;
 const token = '123456:test-token';
 const secret = 'test-secret';
+const pendingRetentionMs = 60 * 24 * 60 * 60 * 1000;
+const resultRetentionMs = 7 * 24 * 60 * 60 * 1000;
+const expiredRecord = { result: { handled: false, reason: 'expired_update' } };
 const baseEnv = (): Env => ({ ...env, TELEGRAM_BOT_TOKEN: token, TELEGRAM_WEBHOOK_SECRET: secret });
 const makeUpdate = (long = false): TelegramUpdate => ({
 	update_id: nextId++,
@@ -90,6 +93,75 @@ describe('F01 webhook authentication', () => {
 	});
 });
 
+describe('webhook chat allowlist', () => {
+	it.each(['/', '/webhook'])('acknowledges an unlisted chat without accessing the processor on %s', async (pathname) => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const update = makeUpdate();
+		const getByName = vi.fn(() => stubFor(update));
+		const outbound = mockSuccess();
+		const response = await post(
+			update,
+			{ ALLOWED_CHAT_IDS: '123, -100999', TELEGRAM_UPDATES: { getByName } as unknown as Env['TELEGRAM_UPDATES'] },
+			secret,
+			pathname,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+		expect(getByName).not.toHaveBeenCalled();
+		expect(outbound).not.toHaveBeenCalled();
+		expect(logError).not.toHaveBeenCalled();
+	});
+	it.each(
+		['', ' ', '-100123,', '-100123, 1e3', '-100123, 9007199254740992', 123456, true, null, [-100123], { id: -100123 }].map((list) => ({
+			list,
+		})),
+	)('logs a configuration error and fails closed for $list', async ({ list }) => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const update = makeUpdate();
+		const getByName = vi.fn(() => stubFor(update));
+		const outbound = mockSuccess();
+		const binding = { getByName } as unknown as Env['TELEGRAM_UPDATES'];
+		const response = await post(update, { ALLOWED_CHAT_IDS: list, TELEGRAM_UPDATES: binding });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+		expect(logError.mock.calls).toEqual([['Invalid ALLOWED_CHAT_IDS configuration']]);
+		expect(getByName).not.toHaveBeenCalled();
+		expect(outbound).not.toHaveBeenCalled();
+	});
+	it('accepts listed direct messages and channel posts, and permits any chat when unset', async () => {
+		const dm = makeUpdate();
+		dm.message!.chat = { id: 42, type: 'private' };
+		const channel = makeUpdate();
+		channel.channel_post = { ...channel.message!, chat: { id: -100123, type: 'channel' } };
+		delete channel.message;
+		const outbound = mockSuccess();
+		const allowed = { ALLOWED_CHAT_IDS: ' 42, -100123 ' };
+		expect((await post(dm, allowed, 'wrong-secret')).status).toBe(401);
+		expect((await post(dm, allowed)).status).toBe(200);
+		expect((await post(channel, allowed)).status).toBe(200);
+		expect((await post(makeUpdate(), { ALLOWED_CHAT_IDS: undefined })).status).toBe(200);
+		expect(outbound.mock.calls.map(([input, init]) => [methodOf(input), JSON.parse(String(init?.body)).chat_id])).toEqual([
+			['sendDocument', 42],
+			['deleteMessage', 42],
+			['sendDocument', -100123],
+			['deleteMessage', -100123],
+			['sendDocument', -100123],
+			['deleteMessage', -100123],
+		]);
+	});
+	it('requires an existing journal to match the authorized chat before resuming it', async () => {
+		const update = makeUpdate();
+		const journalUpdate = structuredClone(update);
+		journalUpdate.message!.chat.id = -100999;
+		await runInDurableObject(stubFor(update), (_, state) =>
+			state.storage.put('update', { update: journalUpdate, threshold: 10, progress: { sentFollowUps: 0 } }),
+		);
+		const outbound = mockSuccess();
+		expect((await post(update, { ALLOWED_CHAT_IDS: '-100123' })).status).toBe(200);
+		expect(outbound).not.toHaveBeenCalled();
+	});
+});
+
 describe('F03 durable webhook processing', () => {
 	it('does not acknowledge until the last API call and durable completion', async () => {
 		const update = makeUpdate();
@@ -148,6 +220,7 @@ describe('F03 durable webhook processing', () => {
 		const saved = await runInDurableObject(stub, (_, state) => state.storage.get('update'));
 		expect(saved).toStrictEqual({
 			threshold: 10,
+			expiresAt: expect.any(Number),
 			progress: { sentFollowUps: 0, retryAt: expect.any(Number) },
 			lastFailure: { handled: false, reason: 'resend_failed' },
 			update: {
@@ -223,14 +296,18 @@ describe('F03 durable webhook processing', () => {
 		const first = await post(update);
 		expect(first.status).toBe(503);
 		expect(first.headers.get('Retry-After')).toBe('60');
+		const pendingAlarm = await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm());
+		expect(pendingAlarm).toBeGreaterThan(Date.now());
 		expect((await post(update)).status).toBe(503);
+		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm())).toBe(pendingAlarm);
 		expect(outbound).toHaveBeenCalledTimes(1);
 		await clearCooldown(update);
 		await evictDurableObject(stubFor(update));
 		expect((await post(update)).status).toBe(200);
+		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm())).toBeLessThan(pendingAlarm!);
 		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['sendDocument', 'sendDocument', 'deleteMessage']);
 	});
-	it.each([400, 401, 403, 404])('holds a rejected media send (%s) across cooldowns and eviction', async (errorCode) => {
+	it.each([400, 401, 403, 404])('acknowledges a durably held media rejection (%s) across eviction', async (errorCode) => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		update.message!.caption = '설명서';
@@ -238,20 +315,24 @@ describe('F03 durable webhook processing', () => {
 		const outbound = mockSuccess().mockImplementationOnce(async () =>
 			Response.json({ ok: false, error_code: errorCode }, { status: errorCode }),
 		);
-		expect((await post(update)).status).toBe(503);
+		const started = Date.now();
+		const first = await post(update);
+		expect(first.status).toBe(200);
+		expect(first.headers.has('Retry-After')).toBe(false);
 		const saved = await runInDurableObject(stubFor(update), (_, state) =>
-			state.storage.get<{ progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>('update'),
+			state.storage.get<{ expiresAt: number; progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>('update'),
 		);
+		expect(saved?.expiresAt).toBeGreaterThanOrEqual(started + pendingRetentionMs);
+		expect(saved?.expiresAt).toBeLessThanOrEqual(Date.now() + pendingRetentionMs);
 		expect(saved?.progress.blockedSend).toEqual({ reason: 'resend_failed', errorCode });
 		expect(saved?.progress.pendingSend).toBeUndefined();
 		expect(saved?.progress.retryAt).toBeUndefined();
 		expect(saved?.lastFailure.needsReconciliation).toBe(true);
-		expect((await post(update)).status).toBe(503);
-		await clearCooldown(update);
+		expect((await post(update)).status).toBe(200);
 		await evictDurableObject(stubFor(update));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
 		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['sendDocument']);
-		expect(await runDurableObjectAlarm(stubFor(update))).toBe(false);
+		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm())).toBe(saved?.expiresAt);
 	});
 	it.each([400, 403])('holds a rejected follow-up (%s) without further sends or deletion', async (errorCode) => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -259,10 +340,9 @@ describe('F03 durable webhook processing', () => {
 		const outbound = mockSuccess()
 			.mockImplementationOnce(async () => Response.json({ ok: true, result: { message_id: 201 } }))
 			.mockImplementationOnce(async () => Response.json({ ok: false, error_code: errorCode }, { status: errorCode }));
-		expect((await post(update)).status).toBe(503);
-		await clearCooldown(update);
+		expect((await post(update)).status).toBe(200);
 		await evictDurableObject(stubFor(update));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
 		const saved = await runInDurableObject(stubFor(update), (_, state) =>
 			state.storage.get<{ progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>('update'),
 		);
@@ -274,10 +354,15 @@ describe('F03 durable webhook processing', () => {
 		expect(saved?.lastFailure.needsReconciliation).toBe(true);
 		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['sendDocument', 'sendMessage']);
 	});
-	it('keeps a send rejection blocked when the final failure journal write fails', async () => {
-		vi.spyOn(console, 'error').mockImplementation(() => {});
+	it.each(['resend_failed', 'delivery_uncertain'])('reports %s even when the final failure journal write fails', async (reason) => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
-		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: 400 }, { status: 400 }));
+		const outbound = mockSuccess();
+		if (reason === 'resend_failed') {
+			outbound.mockImplementationOnce(async () => Response.json({ ok: false, error_code: 400 }, { status: 400 }));
+		} else {
+			outbound.mockRejectedValueOnce(new Error('network error'));
+		}
 		await runInDurableObject(stubFor(update), (_, state) => {
 			const put = state.storage.put.bind(state.storage);
 			vi.spyOn(state.storage, 'put')
@@ -287,9 +372,9 @@ describe('F03 durable webhook processing', () => {
 				.mockRejectedValueOnce(new Error('final journal write unavailable'));
 		});
 		expect((await post(update)).status).toBe(503);
-		await clearCooldown(update);
+		expect(logError).toHaveBeenCalledWith('Telegram delivery requires reconciliation:', update.update_id, reason);
 		await evictDurableObject(stubFor(update));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
 		expect(outbound).toHaveBeenCalledTimes(1);
 	});
 	it.each([400, 403])('still completes after a definite deletion rejection (%s)', async (errorCode) => {
@@ -375,23 +460,24 @@ describe('F03 durable webhook processing', () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		const outbound = mockSuccess().mockRejectedValueOnce(new Error(`network error containing ${token}`));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
 		await evictDurableObject(stubFor(update));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
 		expect(outbound).toHaveBeenCalledTimes(1);
 		const saved = await runInDurableObject(stubFor(update), (_, state) =>
-			state.storage.get<{ progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>('update'),
+			state.storage.get<{ expiresAt: number; progress: ProcessUpdateProgress; lastFailure: ProcessUpdateResult }>('update'),
 		);
 		expect(saved?.progress.pendingSend).toBe('media');
 		expect(saved?.lastFailure.needsReconciliation).toBe(true);
+		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm())).toBe(saved?.expiresAt);
 		expect(JSON.stringify(saved)).not.toContain(token);
 	});
-	it('does not acknowledge or repeat a send with an invalid success result', async () => {
+	it('holds a send with an invalid success result for reconciliation', async () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: true }));
-		expect((await post(update)).status).toBe(503);
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
+		expect((await post(update)).status).toBe(200);
 		expect(outbound).toHaveBeenCalledTimes(1);
 	});
 	it('does not send when the first durable checkpoint fails', async () => {
@@ -417,8 +503,11 @@ describe('F03 durable webhook processing', () => {
 				.mockRejectedValueOnce(new Error('checkpoint unavailable'));
 		});
 		expect((await post(update)).status).toBe(503);
+		const alarm = await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm());
+		expect(alarm).toBeGreaterThan(Date.now());
 		await evictDurableObject(stubFor(update));
-		expect((await post(update)).status).toBe(503);
+		expect((await post(update)).status).toBe(200);
+		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm())).toBe(alarm);
 		expect(outbound).toHaveBeenCalledTimes(1);
 	});
 	const groupMessage = {
@@ -479,25 +568,160 @@ describe('F03 durable webhook processing', () => {
 		expect(logError).not.toHaveBeenCalled();
 		expect((await post(makeUpdate(), overrides)).status).toBe(500);
 	});
-	it('cleans completed journals after retention while keeping unresolved work', async () => {
+	it('cleans completed journals after seven days', async () => {
 		const update = makeUpdate();
 		mockSuccess();
-		const retentionMs = 7 * 24 * 60 * 60 * 1000;
 		const started = Date.now();
 		await post(update);
 		const ended = Date.now();
 		const alarm = await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm());
-		expect(alarm).toBeGreaterThanOrEqual(started + retentionMs);
-		expect(alarm).toBeLessThanOrEqual(ended + retentionMs);
+		expect(alarm).toBeGreaterThanOrEqual(started + resultRetentionMs);
+		expect(alarm).toBeLessThanOrEqual(ended + resultRetentionMs);
 		expect(await runDurableObjectAlarm(stubFor(update))).toBe(true);
 		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.get('update'))).toBeUndefined();
-		const unresolved = makeUpdate();
-		await runInDurableObject(stubFor(unresolved), async (_, state) => {
-			await state.storage.put('update', { update: unresolved, threshold: 10, progress: { sentFollowUps: 0, pendingSend: 'media' } });
-			await state.storage.setAlarm(Date.now() + 1000);
+	});
+	it.each([true, false])('uses the final journal when an expired alarm meets an in-flight retry (completed: %s)', async (completed) => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const update = makeUpdate();
+		const stub = stubFor(update);
+		const startedAt = Date.now();
+		const expiresAt = startedAt + 1000;
+		const clock = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
+		const finish = Promise.withResolvers<void>();
+		let alarmStarted = false;
+		const outbound = mockSuccess().mockImplementationOnce(async () => {
+			await finish.promise;
+			return completed ? Response.json({ ok: true, result: true }) : Response.json({ ok: false, error_code: 500 }, { status: 500 });
 		});
-		await runDurableObjectAlarm(stubFor(unresolved));
-		expect(await runInDurableObject(stubFor(unresolved), (_, state) => state.storage.get('update'))).toBeDefined();
+		await runInDurableObject(stub, async (instance, state) => {
+			await state.storage.put('update', {
+				update,
+				threshold: 10,
+				progress: { resentMessageId: 200, captionPreserved: true, sentFollowUps: 0 },
+				lastFailure: { handled: false, reason: 'delete_failed' },
+				expiresAt,
+			});
+			await state.storage.setAlarm(startedAt + 60_000);
+			const alarm = instance.alarm.bind(instance);
+			vi.spyOn(instance, 'alarm').mockImplementationOnce(() => {
+				alarmStarted = true;
+				return alarm();
+			});
+		});
+		const processing = post(update);
+		await vi.waitFor(() => expect(outbound).toHaveBeenCalledTimes(1));
+		clock.mockReturnValue(expiresAt);
+		const cleanup = runDurableObjectAlarm(stub);
+		await vi.waitFor(() => expect(alarmStarted).toBe(true));
+		finish.resolve();
+		const [response, ran] = await Promise.all([processing, cleanup]);
+		expect(response.status).toBe(completed ? 200 : 503);
+		expect(ran).toBe(true);
+		await runInDurableObject(stub, async (_, state) => {
+			const completedRecord = { result: { handled: true, deletedOriginal: true, sentFollowUps: 0 } };
+			expect(await state.storage.get('update')).toEqual(completed ? completedRecord : expiredRecord);
+			expect(await state.storage.getAlarm()).toBe(expiresAt + resultRetentionMs);
+		});
+		expect((await post(update)).status).toBe(200);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['deleteMessage']);
+	});
+	it.each([{ sentFollowUps: 0 }, { resentMessageId: 200, captionPreserved: true, sentFollowUps: 0 }])(
+		'acknowledges expired work before its cleanup alarm without resuming it (%j)',
+		async (progress) => {
+			const update = makeUpdate();
+			const stub = stubFor(update);
+			const expiresAt = Date.now() - 1;
+			const outbound = mockSuccess();
+			await runInDurableObject(stub, async (_, state) => {
+				await state.storage.put('update', { update, threshold: 10, progress, expiresAt });
+				await state.storage.setAlarm(expiresAt + 60_000);
+			});
+			const started = Date.now();
+			const response = await post(update);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ ok: true });
+			const alarm = await runInDurableObject(stub, async (_, state) => {
+				expect(await state.storage.get('update')).toEqual(expiredRecord);
+				return state.storage.getAlarm();
+			});
+			expect(alarm).toBeGreaterThanOrEqual(started + resultRetentionMs);
+			expect(alarm).toBeLessThanOrEqual(Date.now() + resultRetentionMs);
+			await evictDurableObject(stub);
+			expect((await post(update)).status).toBe(200);
+			expect(await runInDurableObject(stub, (_, state) => state.storage.getAlarm())).toBe(alarm);
+			expect(outbound).not.toHaveBeenCalled();
+		},
+	);
+	it.each([
+		{ sentFollowUps: 0, blockedSend: { reason: 'resend_failed', errorCode: 403 } },
+		{ sentFollowUps: 0, pendingSend: 'media' as const },
+		{ sentFollowUps: 0 },
+	])('rearms an early cleanup and discards expired work while suppressing duplicates (%j)', async (progress) => {
+		const update = makeUpdate();
+		const stub = stubFor(update);
+		const outbound = mockSuccess();
+		const now = Date.now();
+		const expiresAt = now + pendingRetentionMs;
+		const record = { update, threshold: 10, progress, expiresAt };
+		await runInDurableObject(stub, async (_, state) => {
+			await state.storage.put('update', record);
+			await state.storage.setAlarm(now + 1000);
+		});
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.get('update')).toEqual(record);
+			expect(await state.storage.getAlarm()).toBe(expiresAt);
+			await state.storage.put('update', { ...record, expiresAt: now - 1 });
+		});
+		const started = Date.now();
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.get('update')).toEqual(expiredRecord);
+			const deleteAt = await state.storage.getAlarm();
+			expect(deleteAt).toBeGreaterThanOrEqual(started + resultRetentionMs);
+			expect(deleteAt).toBeLessThanOrEqual(Date.now() + resultRetentionMs);
+		});
+		expect((await post(update)).status).toBe(200);
+		expect(outbound).not.toHaveBeenCalled();
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+		expect(await runInDurableObject(stub, (_, state) => state.storage.get('update'))).toBeUndefined();
+	});
+	it('preserves a persisted deadline when a retry first records a failure after an interruption', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const update = makeUpdate();
+		const stub = stubFor(update);
+		const expiresAt = Date.now() + 60_000;
+		await runInDurableObject(stub, async (_, state) => {
+			await state.storage.put('update', {
+				update,
+				threshold: 10,
+				progress: { resentMessageId: 200, captionPreserved: true, sentFollowUps: 0 },
+				expiresAt,
+			});
+			await state.storage.setAlarm(expiresAt);
+		});
+		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: 500 }, { status: 500 }));
+		expect((await post(update)).status).toBe(503);
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.get('update')).toMatchObject({ expiresAt, lastFailure: { reason: 'delete_failed' } });
+			expect(await state.storage.getAlarm()).toBe(expiresAt);
+		});
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['deleteMessage']);
+	});
+	it('assigns a retention deadline when an older unresolved journal is revisited', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const update = makeUpdate();
+		const stub = stubFor(update);
+		await runInDurableObject(stub, (_, state) =>
+			state.storage.put('update', { update, threshold: 10, progress: { sentFollowUps: 0, pendingSend: 'media' } }),
+		);
+		const outbound = mockSuccess();
+		const started = Date.now();
+		expect((await post(update)).status).toBe(200);
+		const alarm = await runInDurableObject(stub, (_, state) => state.storage.getAlarm());
+		expect(alarm).toBeGreaterThanOrEqual(started + pendingRetentionMs);
+		expect(alarm).toBeLessThanOrEqual(Date.now() + pendingRetentionMs);
+		expect(outbound).not.toHaveBeenCalled();
 	});
 });
 

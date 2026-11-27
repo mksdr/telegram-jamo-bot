@@ -102,7 +102,7 @@ export interface ProcessUpdateResult {
 export const TELEGRAM_API_TIMEOUT_MS = 5_000;
 export const UPDATE_TIME_BUDGET_MS = 20_000;
 
-const IGNORED_REASONS = new Set(['no_message', 'from_bot', 'no_supported_file', 'empty_tokens']);
+const IGNORED_REASONS = new Set(['no_message', 'from_bot', 'no_supported_file', 'empty_tokens', 'chat_not_allowed', 'expired_update']);
 
 export function isUpdateComplete(result: ProcessUpdateResult): boolean {
 	return result.handled || (result.reason !== undefined && IGNORED_REASONS.has(result.reason));

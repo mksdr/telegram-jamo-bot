@@ -20,6 +20,20 @@ function safeEqual(a: string, b: string): boolean {
 	return diff === 0;
 }
 
+function parseAllowedChatIds(value: unknown): Set<number> | null | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== 'string') return null;
+
+	const ids = new Set<number>();
+	for (const part of value.split(',')) {
+		const text = part.trim();
+		const chatId = Number(text);
+		if (!/^[+-]?\d+$/.test(text) || !Number.isSafeInteger(chatId)) return null;
+		ids.add(chatId);
+	}
+	return ids;
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
@@ -50,7 +64,17 @@ export default {
 			}
 
 			try {
-				if ('reason' in classifyTelegramUpdate(update)) return Response.json({ ok: true }, { status: 200 });
+				const allowedChatIds = parseAllowedChatIds(env.ALLOWED_CHAT_IDS);
+				if (allowedChatIds === null) {
+					console.error('Invalid ALLOWED_CHAT_IDS configuration');
+					return Response.json({ ok: true }, { status: 200 });
+				}
+				if (allowedChatIds !== undefined) {
+					const chatId = (update.message ?? update.channel_post)?.chat?.id;
+					if (chatId === undefined || !allowedChatIds.has(chatId)) return Response.json({ ok: true }, { status: 200 });
+				}
+				const classified = classifyTelegramUpdate(update);
+				if ('reason' in classified) return Response.json({ ok: true }, { status: 200 });
 
 				if (!env.TELEGRAM_BOT_TOKEN) {
 					console.error('Missing TELEGRAM_BOT_TOKEN environment secret.');
@@ -61,8 +85,9 @@ export default {
 				const threshold = Number.isFinite(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_FULL_MODE_THRESHOLD;
 				const botId = env.TELEGRAM_BOT_TOKEN.split(':')[0];
 				const processor = env.TELEGRAM_UPDATES.getByName(`${botId}:${update.update_id}`);
-				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold);
-				if (!isUpdateComplete(result)) {
+				const authorizedChatId = allowedChatIds === undefined ? undefined : classified.message.chat.id;
+				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold, authorizedChatId);
+				if (!isUpdateComplete(result) && !result.needsReconciliation) {
 					console.error('Telegram update incomplete:', update.update_id, result.reason);
 					return Response.json(
 						{ ok: false, error: 'Telegram update processing incomplete' },
