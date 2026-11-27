@@ -28,7 +28,9 @@
 
 미완료 기록에는 재처리에 필요한 채팅·메시지 ID, 선택된 첨부의 파일 ID(`file_id`)와 파일명, 캡션, 멘션이 포함될 수 있는 캡션 엔티티 등이 저장됩니다. 이전 버전의 미완료 기록에는 다음 처리 시도에서 기록을 다시 저장할 때까지 발신자와 채팅 정보가 포함된 전체 원본 업데이트가 남아 있을 수 있습니다. 전송 결과 불명확·수동 확인 등 미완료 기록은 자동 삭제하지 않습니다.
 
-완료 시 활성 기록에서 처리 결과만 남기고, 7일 후 결과를 삭제합니다. SQLite Durable Object의 시점 복구(PITR) 이력에서는 삭제 전 데이터가 최대 30일 동안 복구될 수 있습니다. [Cloudflare 시점 복구 문서](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)
+이 버전에서 처리가 완료되면 활성 저장소에 처리 결과만 남기고, 완료 7일 후 알람으로 삭제합니다. 이전 버전에서 이미 완료된 기록은 처리 대상 중복 요청이 들어오면 기존 만료 시각을 유지한 채 결과만 남깁니다. 그 전에 처리 대상 중복 요청이 없으면 기존 삭제 알람이 실행될 때까지 전체 원본 업데이트가 활성 저장소에 남을 수 있습니다.
+
+SQLite Durable Object의 시점 복구(PITR)는 최근 30일 내의 저장 상태를 복구할 수 있습니다. 중복 요청으로 활성 기록에서 본문을 제거하거나 알람으로 기록을 삭제한 뒤에도, 보존 범위 내의 제거 전 시점으로 복구하면 원본 업데이트가 다시 나타날 수 있습니다. [Cloudflare 시점 복구 문서](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)
 
 운영자는 저장소 접근 권한, 로그 공유 범위와 보존 정책을 관리해야 합니다.
 
