@@ -66,7 +66,7 @@ npm run deploy
 
 개인용이나 지정 채팅 전용으로 운영할 때는 `ALLOWED_CHAT_IDS`에 처리할 Telegram 채팅 ID를 쉼표로 구분해 지정합니다. 예를 들어 `123456789,-1001234567890`처럼 숫자 ID를 넣고 그룹·채널 ID의 음수 부호를 유지합니다. 운영에서는 `wrangler.jsonc`의 `vars`에 문자열로 설정하거나 `npx wrangler secret put ALLOWED_CHAT_IDS`를 사용합니다. 로컬에서는 `.dev.vars`에 설정합니다.
 
-변수를 정의하지 않으면 모든 채팅을 허용합니다. 변수에 빈 값이나 잘못된 항목이 있으면 모든 채팅을 무시합니다. 목록을 설정하면 웹훅을 인증한 뒤 목록 밖 채팅에 HTTP 200으로 응답하고, Durable Object 조회와 Telegram Bot API 호출을 건너뜁니다. 그룹을 사용하지 않는 개인용 또는 지정 채팅 전용 봇은 BotFather의 `/setjoingroups`로 그룹 추가를 비활성화하는 것을 권장합니다. [Telegram BotFather 설정](https://core.telegram.org/bots/features#edit-settings)
+변수를 정의하지 않으면 모든 채팅을 허용합니다. 빈 문자열, 잘못된 항목, 문자열이 아닌 값은 설정 오류입니다. 설정 오류가 있으면 인증된 업데이트에 HTTP 200으로 응답하고 `Invalid ALLOWED_CHAT_IDS configuration` 오류를 Workers Logs에 남깁니다. 정상 목록에 없는 채팅에도 HTTP 200으로 응답합니다. 두 경우 모두 Durable Object 조회와 Telegram Bot API 호출을 건너뜁니다. 그룹을 사용하지 않는 개인용 또는 지정 채팅 전용 봇은 BotFather의 `/setjoingroups`로 그룹 추가를 비활성화하는 것을 권장합니다. [Telegram BotFather 설정](https://core.telegram.org/bots/features#edit-settings)
 
 ### Telegram 웹훅 등록
 

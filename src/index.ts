@@ -20,12 +20,18 @@ function safeEqual(a: string, b: string): boolean {
 	return diff === 0;
 }
 
-function isChatAllowed(update: TelegramUpdate, allowedChatIds: string | undefined): boolean {
-	if (allowedChatIds === undefined) return true;
-	const chatId = (update.message ?? update.channel_post)?.chat?.id;
-	if (!Number.isSafeInteger(chatId)) return false;
-	const ids = allowedChatIds.split(',').map((id) => id.trim());
-	return ids.every((id) => /^[+-]?\d+$/.test(id) && Number.isSafeInteger(Number(id))) && ids.some((id) => Number(id) === chatId);
+function parseAllowedChatIds(value: unknown): Set<number> | null | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== 'string') return null;
+
+	const ids = new Set<number>();
+	for (const part of value.split(',')) {
+		const text = part.trim();
+		const chatId = Number(text);
+		if (!/^[+-]?\d+$/.test(text) || !Number.isSafeInteger(chatId)) return null;
+		ids.add(chatId);
+	}
+	return ids;
 }
 
 export default {
@@ -58,8 +64,15 @@ export default {
 			}
 
 			try {
-				const allowedChatIds = env.ALLOWED_CHAT_IDS;
-				if (!isChatAllowed(update, allowedChatIds)) return Response.json({ ok: true }, { status: 200 });
+				const allowedChatIds = parseAllowedChatIds(env.ALLOWED_CHAT_IDS);
+				if (allowedChatIds === null) {
+					console.error('Invalid ALLOWED_CHAT_IDS configuration');
+					return Response.json({ ok: true }, { status: 200 });
+				}
+				if (allowedChatIds !== undefined) {
+					const chatId = (update.message ?? update.channel_post)?.chat?.id;
+					if (chatId === undefined || !allowedChatIds.has(chatId)) return Response.json({ ok: true }, { status: 200 });
+				}
 				const classified = classifyTelegramUpdate(update);
 				if ('reason' in classified) return Response.json({ ok: true }, { status: 200 });
 

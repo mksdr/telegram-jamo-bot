@@ -93,6 +93,7 @@ describe('F01 webhook authentication', () => {
 
 describe('webhook chat allowlist', () => {
 	it.each(['/', '/webhook'])('acknowledges an unlisted chat without accessing the processor on %s', async (pathname) => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		const getByName = vi.fn(() => stubFor(update));
 		const outbound = mockSuccess();
@@ -106,13 +107,22 @@ describe('webhook chat allowlist', () => {
 		expect(await response.json()).toEqual({ ok: true });
 		expect(getByName).not.toHaveBeenCalled();
 		expect(outbound).not.toHaveBeenCalled();
+		expect(logError).not.toHaveBeenCalled();
 	});
-	it.each(['', ' ', '-100123,', '-100123, 1e3', '-100123, 9007199254740992'])('fails closed for invalid list %j', async (list) => {
+	it.each(
+		['', ' ', '-100123,', '-100123, 1e3', '-100123, 9007199254740992', 123456, true, null, [-100123], { id: -100123 }].map((list) => ({
+			list,
+		})),
+	)('logs a configuration error and fails closed for $list', async ({ list }) => {
+		const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		const getByName = vi.fn(() => stubFor(update));
 		const outbound = mockSuccess();
 		const binding = { getByName } as unknown as Env['TELEGRAM_UPDATES'];
-		expect((await post(update, { ALLOWED_CHAT_IDS: list, TELEGRAM_UPDATES: binding })).status).toBe(200);
+		const response = await post(update, { ALLOWED_CHAT_IDS: list, TELEGRAM_UPDATES: binding });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+		expect(logError.mock.calls).toEqual([['Invalid ALLOWED_CHAT_IDS configuration']]);
 		expect(getByName).not.toHaveBeenCalled();
 		expect(outbound).not.toHaveBeenCalled();
 	});
