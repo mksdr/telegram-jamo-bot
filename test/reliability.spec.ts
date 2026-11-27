@@ -116,8 +116,82 @@ describe('F03 durable webhook processing', () => {
 		expect(settled).toBe(false);
 		finish(Response.json({ ok: true, result: true }));
 		expect((await response).status).toBe(200);
-		const saved = await runInDurableObject(stubFor(update), (_, state) => state.storage.get<{ result: ProcessUpdateResult }>('update'));
-		expect(saved?.result.handled).toBe(true);
+		const saved = await runInDurableObject(stubFor(update), (_, state) => state.storage.get('update'));
+		expect(saved).toStrictEqual({ result: { handled: true, deletedOriginal: true, sentFollowUps: 0 } });
+	});
+	it.each(['new', 'legacy'])('stores only processing fields in a %s pending journal', async (journal) => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const caption = '  사용자  ';
+		const entities = [{ type: 'text_mention', offset: 2, length: 3, user: { id: 42, is_bot: false, first_name: '사용자' } }];
+		const update = {
+			update_id: nextId++,
+			ignored_update_field: 'unused data',
+			channel_post: {
+				chat: { id: -100123, type: 'channel' as const, title: 'Private channel', username: 'channel_user' },
+				message_id: 50,
+				message_thread_id: 12,
+				from: { id: 1, is_bot: false, first_name: 'Sender', last_name: 'Example', username: 'sender_user' },
+				text: 'unused text',
+				reply_to_message: { text: 'private reply' },
+				caption,
+				caption_entities: entities,
+				audio: { file_id: 'audio-file', file_unique_id: 'unique-id', file_name: ' ', title: ' 한국.mp3 ', performer: 'Artist' },
+				video: { file_id: 'unused-video', file_name: 'unused.mp4' },
+			},
+		};
+		const stub = stubFor(update);
+		if (journal === 'legacy') {
+			await runInDurableObject(stub, (_, state) => state.storage.put('update', { update, threshold: 10, progress: { sentFollowUps: 0 } }));
+		}
+		const outbound = mockSuccess().mockImplementationOnce(async () => Response.json({ ok: false, error_code: 429 }, { status: 429 }));
+		expect((await post(update)).status).toBe(503);
+		const saved = await runInDurableObject(stub, (_, state) => state.storage.get<{ update: TelegramUpdate }>('update'));
+		expect(saved).toMatchObject({ threshold: 10, progress: { sentFollowUps: 0 }, lastFailure: { reason: 'resend_failed' } });
+		expect(saved?.update).toStrictEqual({
+			update_id: update.update_id,
+			channel_post: {
+				chat: { id: -100123 },
+				message_id: 50,
+				message_thread_id: 12,
+				caption,
+				caption_entities: entities,
+				audio: { file_id: 'audio-file', file_name: '한국.mp3' },
+			},
+		});
+		await clearCooldown(update);
+		await evictDurableObject(stub);
+		expect((await post(update)).status).toBe(200);
+		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['sendAudio', 'sendAudio', 'deleteMessage']);
+		expect(JSON.parse(String(outbound.mock.calls[1][1]?.body))).toMatchObject({
+			chat_id: -100123,
+			message_thread_id: 12,
+			audio: 'audio-file',
+			caption: expect.stringContaining(`${caption}\n\n`),
+			caption_entities: entities,
+		});
+		expect(await runInDurableObject(stub, (_, state) => state.storage.get('update'))).toStrictEqual({
+			result: { handled: true, deletedOriginal: true, sentFollowUps: 0 },
+		});
+	});
+	it('compacts a legacy completion without replaying it or resetting its alarm', async () => {
+		const update = makeUpdate();
+		const stub = stubFor(update);
+		const result = { handled: true, deletedOriginal: true, sentFollowUps: 0 };
+		const expiresAt = Date.now() + 60_000;
+		await runInDurableObject(stub, async (_, state) => {
+			await state.storage.put('update', { update, threshold: 10, progress: { sentFollowUps: 0 }, result });
+			await state.storage.setAlarm(expiresAt);
+		});
+		await evictDurableObject(stub);
+		const outbound = mockSuccess();
+		expect((await post(update)).status).toBe(200);
+		expect(outbound).not.toHaveBeenCalled();
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.get('update')).toStrictEqual({ result });
+			expect(await state.storage.getAlarm()).toBe(expiresAt);
+		});
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+		expect(await runInDurableObject(stub, (_, state) => state.storage.get('update'))).toBeUndefined();
 	});
 	it('coalesces concurrent requests and remembers completion after eviction', async () => {
 		const update = makeUpdate();
@@ -404,7 +478,13 @@ describe('F03 durable webhook processing', () => {
 	it('cleans completed journals after retention while keeping unresolved work', async () => {
 		const update = makeUpdate();
 		mockSuccess();
+		const retentionMs = 7 * 24 * 60 * 60 * 1000;
+		const started = Date.now();
 		await post(update);
+		const ended = Date.now();
+		const alarm = await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm());
+		expect(alarm).toBeGreaterThanOrEqual(started + retentionMs);
+		expect(alarm).toBeLessThanOrEqual(ended + retentionMs);
 		expect(await runDurableObjectAlarm(stubFor(update))).toBe(true);
 		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.get('update'))).toBeUndefined();
 		const unresolved = makeUpdate();
