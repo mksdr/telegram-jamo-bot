@@ -16,6 +16,8 @@ let nextId = 1_000;
 const token = '123456:test-token';
 const secret = 'test-secret';
 const pendingRetentionMs = 60 * 24 * 60 * 60 * 1000;
+const resultRetentionMs = 7 * 24 * 60 * 60 * 1000;
+const expiredRecord = { result: { handled: false, reason: 'expired_update' } };
 const baseEnv = (): Env => ({ ...env, TELEGRAM_BOT_TOKEN: token, TELEGRAM_WEBHOOK_SECRET: secret });
 const makeUpdate = (long = false): TelegramUpdate => ({
 	update_id: nextId++,
@@ -569,13 +571,12 @@ describe('F03 durable webhook processing', () => {
 	it('cleans completed journals after seven days', async () => {
 		const update = makeUpdate();
 		mockSuccess();
-		const retentionMs = 7 * 24 * 60 * 60 * 1000;
 		const started = Date.now();
 		await post(update);
 		const ended = Date.now();
 		const alarm = await runInDurableObject(stubFor(update), (_, state) => state.storage.getAlarm());
-		expect(alarm).toBeGreaterThanOrEqual(started + retentionMs);
-		expect(alarm).toBeLessThanOrEqual(ended + retentionMs);
+		expect(alarm).toBeGreaterThanOrEqual(started + resultRetentionMs);
+		expect(alarm).toBeLessThanOrEqual(ended + resultRetentionMs);
 		expect(await runDurableObjectAlarm(stubFor(update))).toBe(true);
 		expect(await runInDurableObject(stubFor(update), (_, state) => state.storage.get('update'))).toBeUndefined();
 	});
@@ -583,7 +584,9 @@ describe('F03 durable webhook processing', () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const update = makeUpdate();
 		const stub = stubFor(update);
-		const completedRetentionMs = 7 * 24 * 60 * 60 * 1000;
+		const startedAt = Date.now();
+		const expiresAt = startedAt + 1000;
+		const clock = vi.spyOn(Date, 'now').mockReturnValue(startedAt);
 		const finish = Promise.withResolvers<void>();
 		let alarmStarted = false;
 		const outbound = mockSuccess().mockImplementationOnce(async () => {
@@ -596,9 +599,9 @@ describe('F03 durable webhook processing', () => {
 				threshold: 10,
 				progress: { resentMessageId: 200, captionPreserved: true, sentFollowUps: 0 },
 				lastFailure: { handled: false, reason: 'delete_failed' },
-				expiresAt: Date.now() - 1,
+				expiresAt,
 			});
-			await state.storage.setAlarm(Date.now() + 60_000);
+			await state.storage.setAlarm(startedAt + 60_000);
 			const alarm = instance.alarm.bind(instance);
 			vi.spyOn(instance, 'alarm').mockImplementationOnce(() => {
 				alarmStarted = true;
@@ -607,32 +610,56 @@ describe('F03 durable webhook processing', () => {
 		});
 		const processing = post(update);
 		await vi.waitFor(() => expect(outbound).toHaveBeenCalledTimes(1));
+		clock.mockReturnValue(expiresAt);
 		const cleanup = runDurableObjectAlarm(stub);
 		await vi.waitFor(() => expect(alarmStarted).toBe(true));
-		const finishedAt = Date.now();
 		finish.resolve();
 		const [response, ran] = await Promise.all([processing, cleanup]);
 		expect(response.status).toBe(completed ? 200 : 503);
 		expect(ran).toBe(true);
 		await runInDurableObject(stub, async (_, state) => {
-			if (completed) {
-				expect(await state.storage.get('update')).toEqual({ result: { handled: true, deletedOriginal: true, sentFollowUps: 0 } });
-				expect(await state.storage.getAlarm()).toBeGreaterThanOrEqual(finishedAt + completedRetentionMs);
-			} else {
-				expect(await state.storage.get('update')).toBeUndefined();
-				expect(await state.storage.getAlarm()).toBeNull();
-			}
+			const completedRecord = { result: { handled: true, deletedOriginal: true, sentFollowUps: 0 } };
+			expect(await state.storage.get('update')).toEqual(completed ? completedRecord : expiredRecord);
+			expect(await state.storage.getAlarm()).toBe(expiresAt + resultRetentionMs);
 		});
-		if (completed) expect((await post(update)).status).toBe(200);
+		expect((await post(update)).status).toBe(200);
 		expect(outbound.mock.calls.map(([input]) => methodOf(input))).toEqual(['deleteMessage']);
 	});
+	it.each([{ sentFollowUps: 0 }, { resentMessageId: 200, captionPreserved: true, sentFollowUps: 0 }])(
+		'acknowledges expired work before its cleanup alarm without resuming it (%j)',
+		async (progress) => {
+			const update = makeUpdate();
+			const stub = stubFor(update);
+			const expiresAt = Date.now() - 1;
+			const outbound = mockSuccess();
+			await runInDurableObject(stub, async (_, state) => {
+				await state.storage.put('update', { update, threshold: 10, progress, expiresAt });
+				await state.storage.setAlarm(expiresAt + 60_000);
+			});
+			const started = Date.now();
+			const response = await post(update);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ ok: true });
+			const alarm = await runInDurableObject(stub, async (_, state) => {
+				expect(await state.storage.get('update')).toEqual(expiredRecord);
+				return state.storage.getAlarm();
+			});
+			expect(alarm).toBeGreaterThanOrEqual(started + resultRetentionMs);
+			expect(alarm).toBeLessThanOrEqual(Date.now() + resultRetentionMs);
+			await evictDurableObject(stub);
+			expect((await post(update)).status).toBe(200);
+			expect(await runInDurableObject(stub, (_, state) => state.storage.getAlarm())).toBe(alarm);
+			expect(outbound).not.toHaveBeenCalled();
+		},
+	);
 	it.each([
 		{ sentFollowUps: 0, blockedSend: { reason: 'resend_failed', errorCode: 403 } },
 		{ sentFollowUps: 0, pendingSend: 'media' as const },
 		{ sentFollowUps: 0 },
-	])('rearms an early cleanup and removes expired pending work (%j)', async (progress) => {
+	])('rearms an early cleanup and discards expired work while suppressing duplicates (%j)', async (progress) => {
 		const update = makeUpdate();
 		const stub = stubFor(update);
+		const outbound = mockSuccess();
 		const now = Date.now();
 		const expiresAt = now + pendingRetentionMs;
 		const record = { update, threshold: 10, progress, expiresAt };
@@ -646,6 +673,16 @@ describe('F03 durable webhook processing', () => {
 			expect(await state.storage.getAlarm()).toBe(expiresAt);
 			await state.storage.put('update', { ...record, expiresAt: now - 1 });
 		});
+		const started = Date.now();
+		expect(await runDurableObjectAlarm(stub)).toBe(true);
+		await runInDurableObject(stub, async (_, state) => {
+			expect(await state.storage.get('update')).toEqual(expiredRecord);
+			const deleteAt = await state.storage.getAlarm();
+			expect(deleteAt).toBeGreaterThanOrEqual(started + resultRetentionMs);
+			expect(deleteAt).toBeLessThanOrEqual(Date.now() + resultRetentionMs);
+		});
+		expect((await post(update)).status).toBe(200);
+		expect(outbound).not.toHaveBeenCalled();
 		expect(await runDurableObjectAlarm(stub)).toBe(true);
 		expect(await runInDurableObject(stub, (_, state) => state.storage.get('update'))).toBeUndefined();
 	});

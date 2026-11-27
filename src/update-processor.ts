@@ -20,8 +20,9 @@ interface PendingUpdate {
 
 type StoredUpdate = PendingUpdate | { result: ProcessUpdateResult };
 
-const COMPLETED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RESULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PENDING_RETENTION_MS = 60 * 24 * 60 * 60 * 1000;
+const EXPIRED_RESULT: ProcessUpdateResult = { handled: false, reason: 'expired_update' };
 
 function sanitizeTelegramUpdate(update: TelegramUpdate, message: TelegramMessage, media: TargetMedia): TelegramUpdate {
 	const sanitizedMessage: TelegramMessage = {
@@ -53,6 +54,15 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 		return this.inFlight;
 	}
 
+	private async saveFinalResult(result: ProcessUpdateResult): Promise<ProcessUpdateResult> {
+		const deleteAt = Date.now() + RESULT_RETENTION_MS;
+		await this.ctx.storage.transaction(async (txn) => {
+			await txn.setAlarm(deleteAt);
+			await txn.put('update', { result });
+		});
+		return result;
+	}
+
 	private async run(update: TelegramUpdate, botToken: string, threshold: number, authorizedChatId?: number): Promise<ProcessUpdateResult> {
 		const stored = await this.ctx.storage.get<StoredUpdate>('update');
 		if (stored && 'result' in stored) {
@@ -60,6 +70,7 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 			if ('update' in stored) await this.ctx.storage.put('update', { result: stored.result });
 			return stored.result;
 		}
+		if (stored?.expiresAt !== undefined && stored.expiresAt <= Date.now()) return this.saveFinalResult(EXPIRED_RESULT);
 
 		const source = stored?.update ?? update;
 		const classified = classifyTelegramUpdate(source);
@@ -92,12 +103,7 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 				await this.ctx.storage.put('update', state);
 			},
 		});
-		if (isUpdateComplete(result)) {
-			// Schedule before recording completion, so a failed alarm write can be retried.
-			await this.ctx.storage.setAlarm(Date.now() + COMPLETED_RETENTION_MS);
-			await this.ctx.storage.put('update', { result });
-			return result;
-		}
+		if (isUpdateComplete(result)) return this.saveFinalResult(result);
 		if (result.needsReconciliation) console.error('Telegram delivery requires reconciliation:', state.update.update_id, result.reason);
 		if (firstFailure && stored?.expiresAt === undefined) {
 			state.expiresAt = Date.now() + PENDING_RETENTION_MS;
@@ -114,7 +120,7 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 		const state = await this.ctx.storage.get<StoredUpdate>('update');
 		if (!state) return;
 		if ('result' in state) {
-			// A pending alarm may have started just as processing scheduled completion cleanup.
+			// Processing may have scheduled result cleanup while this alarm was running.
 			if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.deleteAll();
 			return;
 		}
@@ -128,7 +134,7 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 		} else if (state.expiresAt > now) {
 			await this.ctx.storage.setAlarm(state.expiresAt);
 		} else {
-			await this.ctx.storage.deleteAll();
+			await this.saveFinalResult(EXPIRED_RESULT);
 		}
 	}
 }
