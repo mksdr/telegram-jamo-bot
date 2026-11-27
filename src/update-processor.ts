@@ -3,6 +3,7 @@ import {
 	classifyTelegramUpdate,
 	isUpdateComplete,
 	processTelegramUpdate,
+	UPDATE_TIME_BUDGET_MS,
 	type ProcessUpdateProgress,
 	type ProcessUpdateResult,
 	type TargetMedia,
@@ -15,11 +16,13 @@ interface PendingUpdate {
 	threshold: number;
 	progress: ProcessUpdateProgress;
 	lastFailure?: ProcessUpdateResult;
+	expiresAt?: number;
 }
 
 type StoredUpdate = PendingUpdate | { result: ProcessUpdateResult };
 
 const COMPLETED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const PENDING_RETENTION_MS = 60 * 24 * 60 * 60 * 1000;
 
 function sanitizeTelegramUpdate(update: TelegramUpdate, message: TelegramMessage, media: TargetMedia): TelegramUpdate {
 	const sanitizedMessage: TelegramMessage = {
@@ -41,17 +44,17 @@ function sanitizeTelegramUpdate(update: TelegramUpdate, message: TelegramMessage
 export class TelegramUpdateProcessor extends DurableObject<Env> {
 	private inFlight?: Promise<ProcessUpdateResult>;
 
-	async process(update: TelegramUpdate, botToken: string, threshold: number): Promise<ProcessUpdateResult> {
+	async process(update: TelegramUpdate, botToken: string, threshold: number, authorizedChatId?: number): Promise<ProcessUpdateResult> {
 		// External fetches yield DO input gates. Coalesce concurrent calls explicitly.
 		if (!this.inFlight) {
-			this.inFlight = this.run(update, botToken, threshold).finally(() => {
+			this.inFlight = this.run(update, botToken, threshold, authorizedChatId).finally(() => {
 				this.inFlight = undefined;
 			});
 		}
 		return this.inFlight;
 	}
 
-	private async run(update: TelegramUpdate, botToken: string, threshold: number): Promise<ProcessUpdateResult> {
+	private async run(update: TelegramUpdate, botToken: string, threshold: number, authorizedChatId?: number): Promise<ProcessUpdateResult> {
 		const stored = await this.ctx.storage.get<StoredUpdate>('update');
 		if (stored && 'result' in stored) {
 			// Compact legacy completions without extending their existing alarm.
@@ -62,13 +65,25 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 		const source = stored?.update ?? update;
 		const classified = classifyTelegramUpdate(source);
 		if ('reason' in classified) return classified;
+		// Retries use the stored payload. Ensure it targets the chat authorized at the webhook.
+		if (authorizedChatId !== undefined && classified.message.chat?.id !== authorizedChatId) {
+			return { handled: false, reason: 'chat_not_allowed' };
+		}
+		const firstFailure =
+			!stored?.lastFailure && !stored?.progress.pendingSend && !stored?.progress.blockedSend && stored?.progress.retryAt === undefined;
+		const expiresAt = stored?.expiresAt ?? Date.now() + PENDING_RETENTION_MS;
 		const state: PendingUpdate = {
 			update: sanitizeTelegramUpdate(source, classified.message, classified.media),
 			threshold: stored?.threshold ?? threshold,
 			progress: stored?.progress ?? { sentFollowUps: 0 },
 			...(stored?.lastFailure !== undefined ? { lastFailure: stored.lastFailure } : {}),
+			expiresAt,
 		};
-		if (!stored) await this.ctx.storage.put('update', state);
+		if (stored?.expiresAt === undefined) {
+			// Arm cleanup before any external call, including attempts interrupted before recording a failure.
+			await this.ctx.storage.setAlarm(expiresAt);
+			await this.ctx.storage.put('update', state);
+		}
 
 		const result = await processTelegramUpdate(state.update, {
 			botToken,
@@ -84,15 +99,38 @@ export class TelegramUpdateProcessor extends DurableObject<Env> {
 			await this.ctx.storage.put('update', { result });
 			return result;
 		}
+		if (firstFailure) {
+			state.expiresAt = Date.now() + PENDING_RETENTION_MS;
+			if (state.expiresAt !== expiresAt) await this.ctx.storage.setAlarm(state.expiresAt);
+		}
 		state.lastFailure = result;
-		if (result.needsReconciliation) console.error('Telegram delivery requires reconciliation:', state.update.update_id);
 		await this.ctx.storage.put('update', state);
+		if (result.needsReconciliation) console.error('Telegram delivery requires reconciliation:', state.update.update_id, result.reason);
 		return result;
 	}
 
 	async alarm(): Promise<void> {
 		const state = await this.ctx.storage.get<StoredUpdate>('update');
-		// Failed/uncertain work is retained for operator recovery, never silently expired.
-		if (state && 'result' in state) await this.ctx.storage.deleteAll();
+		if (!state) return;
+		if ('result' in state) {
+			// A pending alarm may have started just as processing scheduled completion cleanup.
+			if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.deleteAll();
+			return;
+		}
+
+		const now = Date.now();
+		if (state.expiresAt === undefined) {
+			// Legacy journals did not record when the first failure occurred.
+			state.expiresAt = now + PENDING_RETENTION_MS;
+			await this.ctx.storage.setAlarm(state.expiresAt);
+			await this.ctx.storage.put('update', state);
+		} else if (this.inFlight) {
+			// An external request can yield to an alarm. Let its journal writes finish before deleting.
+			await this.ctx.storage.setAlarm(Math.max(state.expiresAt, now + UPDATE_TIME_BUDGET_MS));
+		} else if (state.expiresAt > now) {
+			await this.ctx.storage.setAlarm(state.expiresAt);
+		} else {
+			await this.ctx.storage.deleteAll();
+		}
 	}
 }

@@ -20,6 +20,14 @@ function safeEqual(a: string, b: string): boolean {
 	return diff === 0;
 }
 
+function isChatAllowed(update: TelegramUpdate, allowedChatIds: string | undefined): boolean {
+	if (allowedChatIds === undefined) return true;
+	const chatId = (update.message ?? update.channel_post)?.chat?.id;
+	if (!Number.isSafeInteger(chatId)) return false;
+	const ids = allowedChatIds.split(',').map((id) => id.trim());
+	return ids.every((id) => /^[+-]?\d+$/.test(id) && Number.isSafeInteger(Number(id))) && ids.some((id) => Number(id) === chatId);
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
@@ -50,7 +58,10 @@ export default {
 			}
 
 			try {
-				if ('reason' in classifyTelegramUpdate(update)) return Response.json({ ok: true }, { status: 200 });
+				const allowedChatIds = env.ALLOWED_CHAT_IDS;
+				if (!isChatAllowed(update, allowedChatIds)) return Response.json({ ok: true }, { status: 200 });
+				const classified = classifyTelegramUpdate(update);
+				if ('reason' in classified) return Response.json({ ok: true }, { status: 200 });
 
 				if (!env.TELEGRAM_BOT_TOKEN) {
 					console.error('Missing TELEGRAM_BOT_TOKEN environment secret.');
@@ -61,8 +72,9 @@ export default {
 				const threshold = Number.isFinite(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : DEFAULT_FULL_MODE_THRESHOLD;
 				const botId = env.TELEGRAM_BOT_TOKEN.split(':')[0];
 				const processor = env.TELEGRAM_UPDATES.getByName(`${botId}:${update.update_id}`);
-				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold);
-				if (!isUpdateComplete(result)) {
+				const authorizedChatId = allowedChatIds === undefined ? undefined : classified.message.chat.id;
+				const result = await processor.process(update, env.TELEGRAM_BOT_TOKEN, threshold, authorizedChatId);
+				if (!isUpdateComplete(result) && !result.needsReconciliation) {
 					console.error('Telegram update incomplete:', update.update_id, result.reason);
 					return Response.json(
 						{ ok: false, error: 'Telegram update processing incomplete' },
