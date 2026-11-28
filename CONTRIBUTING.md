@@ -13,7 +13,7 @@ npm run test:ci
 
 `npm test`는 로컬에서 변경을 감지하며 테스트를 실행합니다. 포맷을 수정하려면 `npm run format`을 사용합니다. 생성 파일인 `worker-configuration.d.ts`와 `package-lock.json`은 포맷 대상에서 제외합니다.
 
-테스트는 로컬 Workers 런타임에서 실행하며 Telegram 호출은 모의 처리합니다. 실제 봇 토큰이나 Cloudflare 인증정보는 필요하지 않습니다. 로컬 봇 실행과 배포 방법은 [사용 안내](README.md)를 참고하세요.
+테스트는 로컬 Workers 런타임에서 실행하며 Telegram 호출은 모의 처리합니다. 실제 봇 토큰이나 Cloudflare 인증정보는 필요하지 않습니다. 로컬 봇 실행과 배포 방법은 [배포와 설정](docs/deployment.md)를 참고하세요.
 
 ## 커밋 메시지와 변경 요청 제목
 
